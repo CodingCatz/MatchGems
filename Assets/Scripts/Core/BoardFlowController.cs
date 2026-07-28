@@ -99,5 +99,111 @@ namespace MatchGems.Core
             return _fillService.Fill(board);
         }
         #endregion 公開方法
+
+        #region 私有方法
+        /// <summary>
+        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
+        /// </summary>
+        /// <param name="result"></param>
+        /// <param name="moveCells"></param>
+        private SpecialGemSpawnInfo CreateSpecialGemSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
+        {
+            //搜尋是否含特殊連線
+            MatchLine matchLine = FindSpecialLine(result, moveCells, out bool isBestCoord, out CellCoord bestCoord);
+            //優先序：5連 > TL5連 > 4連
+            if (matchLine != null && matchLine.Length >= 5)
+            {//5連
+                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, matchLine.CenterCoord);
+            }
+
+            if (TryFindBombSpawn(result, out SpecialGemSpawnInfo bombSpawn))
+            {//TL5連
+                return bombSpawn;
+            }
+
+            if (matchLine != null)
+            {//4連
+                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, isBestCoord, bestCoord);
+            }
+
+            //一般
+            return SpecialGemSpawnInfo.None;
+        }
+
+        /// <summary>
+        /// 嘗試找到TL炸彈的組合
+        /// </summary>
+        /// <param name="result"></param>
+        /// <param name="bombSpawn"></param>
+        /// <returns></returns>
+        private bool TryFindBombSpawn(MatchResult result, out SpecialGemSpawnInfo bombSpawn)
+        {
+            bombSpawn = SpecialGemSpawnInfo.None;
+            IReadOnlyList<MatchLine> lines = result.Line;
+
+            for (int a = 0; a < lines.Count; a++)
+            {
+                for (int b = a + 1; b < lines.Count; b++)
+                {
+                    MatchLine lineA = lines[a];
+                    MatchLine lineB = lines[b];
+                    //兩線同向或不同色無法構成TL型
+                    if (lineA.Direction == lineB.Direction || lineA.Color != lineB.Color) continue;
+                    //產生炸彈訂單
+                    bombSpawn = new SpecialGemSpawnInfo(true, GemFactory.CreateBomb(lineA.Color), TryGetIntersection(lineA, lineB));
+                }
+            }
+
+            return false;
+        }
+
+        private MatchLine FindSpecialLine(MatchResult result, IReadOnlyList<CellCoord> moveCells, out bool isBestCoord, out CellCoord bestCoord)
+        {
+            MatchLine line = null;
+            isBestCoord = false;
+            bestCoord = new CellCoord(0, 0);
+
+            for (int i = 0; i < result.LineCount; i++)
+            {
+                if (result.Line[i].Length < 4) continue;
+                isBestCoord = true;
+                bestCoord = TryGetKeyGemCoord(result.Line[i], moveCells);
+            }
+
+            return line;
+        }
+
+        /// <summary>
+        /// 嘗試從連線取得KeyGem的座標
+        /// </summary>
+        /// <param name="line"></param>
+        /// <param name="moveCells"></param>
+        /// <returns></returns>
+        private CellCoord TryGetKeyGemCoord(MatchLine line, IReadOnlyList<CellCoord> moveCells)
+        {
+            if (moveCells != null)
+            {
+                for (int i = 0; i < moveCells.Count; i++)
+                {//移動的座標清單有沒有在線內
+                    if (line.Contain(moveCells[i])) return moveCells[i];
+                }
+            }
+            return line.CenterCoord;//備案：直接給中間
+        }
+
+        /// <summary>
+        /// 嘗試取得一條橫線和一條直線的交叉點
+        /// </summary>
+        /// <param name="A"></param>
+        /// <param name="B"></param>
+        /// <returns></returns>
+        private CellCoord TryGetIntersection(MatchLine A, MatchLine B)
+        {
+            MatchLine lineH = A.Direction == MatchDirection.Horizontal ? A : B;
+            MatchLine lineV = A.Direction == MatchDirection.Vertical ? A : B;
+
+            return new CellCoord(lineV.CenterCoord.X, lineH.CenterCoord.Y); 
+        }
+        #endregion 私有方法
     }
 }

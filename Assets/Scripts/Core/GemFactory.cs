@@ -3,9 +3,9 @@
 namespace MatchGems.Core
 {
     /// <summary>
-    /// 特殊寶石製造工廠
+    /// 特殊寶石製造工廠(靜態公式)
     /// </summary>
-    public class GemFactory
+    public static class GemFactory
     {
         /// <summary>
         /// 依照配對長度和方向產生能力寶石
@@ -28,13 +28,25 @@ namespace MatchGems.Core
             return new GemData(color, GemPower.Normal);
         }
 
-        public static SpecialGemSpawnInfo CreateSpawnInfo(GemType color, int matchLength, MatchDirection direction)
+        public static GemData CreateBomb(GemType color)
+        {
+            return new GemData(color, GemPower.Bomb);
+        }
+
+        /// <summary>
+        /// 依照配對資訊建立特殊寶石(優先使用KeyGem)
+        /// </summary>
+        /// <param name="color"></param>
+        /// <param name="matchLength"></param>
+        /// <param name="direction"></param>
+        /// <returns></returns>
+        public static SpecialGemSpawnInfo CreateSpawnInfo(GemType color, int matchLength, MatchDirection direction, bool isSpecial, CellCoord coord)
         {
             if (matchLength < 4) return SpecialGemSpawnInfo.None;
             GemData gemData = CreateFromMatch(color, matchLength, direction);
             //計算KeyGem的座標
-
-            return new SpecialGemSpawnInfo();
+            CellCoord spawnCoord = coord;
+            return new SpecialGemSpawnInfo(true, gemData, spawnCoord);
         }
     }
 }
