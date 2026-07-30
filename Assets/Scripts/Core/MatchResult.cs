@@ -50,12 +50,10 @@ namespace MatchGems.Core
 
             for (int i = 0; i < _lines.Count; i++)
             {//抽線
-                for (int j = 0; j < _lines[i].Coords.Count; j++)
+                IReadOnlyList<CellCoord> lineCroods = _lines[i].Coords;
+                for (int j = 0; j < lineCroods.Count; j++)
                 {//抽格
-                    if (!coords.Contains(_lines[i].Coords[j]))
-                    {
-                        coords.Add(_lines[i].Coords[j]);
-                    }
+                    AddUnique(coords, lineCroods[j]);
                 }
             }
 
@@ -63,5 +61,21 @@ namespace MatchGems.Core
         }
         #endregion 公開方法
 
+        #region 私有方法
+        /// <summary>
+        /// 剔除重複的格子加入消除清單組
+        /// </summary>
+        /// <param name="coords">母體清單</param>
+        /// <param name="coord">被併入的單體</param>
+        private void AddUnique(List<CellCoord> coords, CellCoord coord)
+        {
+            for (int i = 0; i < coords.Count; i++)
+            {
+                if (coords[i].X == coord.X && coords[i].Y == coord.Y)
+                    return;
+            }
+            coords.Add(coord);
+        }
+        #endregion 私有方法
     }
 }

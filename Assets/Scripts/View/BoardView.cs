@@ -109,6 +109,19 @@ namespace MatchGems.View
             await Task.WhenAll(tasks);
         }
 
+        /// <summary>
+        /// 重畫指定格的寶石外觀
+        /// </summary>
+        /// <param name="board"></param>
+        /// <param name="coord"></param>
+        /// <exception cref="NotImplementedException"></exception>
+        public void RefreshGem(BoardModel board, CellCoord coord)
+        {
+            GemTile tile = GetTile(coord);//定位要重繪的Tile
+            if (tile == null || !board.HasGem(coord)) return;
+            tile.SetGem(board.GetGem(coord));
+        }
+
         public void GemTileAsync(CellCoord from, CellCoord to)
         {
             GemTile tmp = _tiles[to.X, to.Y];

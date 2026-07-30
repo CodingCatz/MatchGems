@@ -62,12 +62,32 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="board"></param>
         /// <param name="result"></param>
-        public void ClearStep(BoardModel board, MatchResult result)
+        public void ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo)
         {
             State = BoardState.Clearing;
             List<CellCoord> coords = result.GetUniqueCoords();
+            RemoveSpawnCoord(coords, spawnInfo);
             //清除資料
             board.ClearGems(coords);
+        }
+
+        /// <summary>
+        /// 從清單排除特殊石
+        /// </summary>
+        /// <param name="coords"></param>
+        /// <param name="spawnInfo"></param>
+        private void RemoveSpawnCoord(List<CellCoord> coords, SpecialGemSpawnInfo spawnInfo)
+        {
+            if (!spawnInfo.HasSpecialGem) return;
+
+            for (int i = 0; i < coords.Count; i++)
+            {
+                if (coords[i].X == spawnInfo.SpawnCoord.X && coords[i].Y == spawnInfo.SpawnCoord.Y)
+                {
+                    coords.RemoveAt(i);
+                    return;
+                }
+            }
         }
 
         /// <summary>
@@ -97,6 +117,11 @@ namespace MatchGems.Core
         {
             State = BoardState.Filling;
             return _fillService.Fill(board);
+        }
+
+        public SpecialGemSpawnInfo CreateSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
+        {
+            return CreateSpecialGemSpawn(result, moveCells);
         }
         #endregion 公開方法
 

@@ -28,6 +28,7 @@ namespace MatchGems.Game
         /// 落下移動時間
         /// </summary>
         [SerializeField] private float _buildAnimationDuration = 0.3f;
+        private readonly List<CellCoord> _moveCells = new List<CellCoord>();
         private BoardModel _boardModel;
         private GridMapper _gridMapper;
         /// <summary>
@@ -98,6 +99,7 @@ namespace MatchGems.Game
             await _boardView.AnimateSwapAsync(from, to, _swapAnimationDuration);
             //動畫任務結束：檢查是否為無效移動(沒配對)
             MatchResult result = _boardFlowController.FindMatches(_boardModel);
+
             if (!result.HasMatch)
             {//沒配到：資料換回，動畫回彈
                 _boardModel.SwapGems(from, to);
@@ -105,19 +107,34 @@ namespace MatchGems.Game
                 _boardFlowController.SetIdle();//回到待機
                 return;//任務中斷
             }
+
+            //資訊重置
             int comboCount = 0;
+            _moveCells.Clear();
+            _moveCells.Add(from);
+            _moveCells.Add(to);
+
             //有配對：進入循環(進到忙碌計算)
             while (result.HasMatch)
             {
+                SpecialGemSpawnInfo spawnInfo = _boardFlowController.CreateSpawn(result, _moveCells);
+
                 //清除資料(整體)
-                _boardFlowController.ClearStep(_boardModel, result);
+                _boardFlowController.ClearStep(_boardModel, result, spawnInfo);
                 //消除動態表演(逐線處理)
                 foreach (MatchLine line in result.Line)
                 {
                     comboCount++;//正確計算連鎖的位子
                     Debug.Log($"連鎖：{comboCount} !!");
                     await _boardView.AnimateClearAsync(line.Coords, _clearAnimationDuration);
+                    //視需求決定是否停置時間
                 }
+                //特殊寶石產生判斷
+                if (spawnInfo.HasSpecialGem)
+                {
+                    _boardView.RefreshGem(_boardModel, spawnInfo.SpawnCoord);
+                }
+
 
                 //套用重力：落下資料
                 List<TileMove> falls = _boardFlowController.ApplyGravity(_boardModel);
