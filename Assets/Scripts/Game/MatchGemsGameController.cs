@@ -119,16 +119,12 @@ namespace MatchGems.Game
             {
                 SpecialGemSpawnInfo spawnInfo = _boardFlowController.CreateSpawn(result, _moveCells);
 
-                //清除資料(整體)
-                _boardFlowController.ClearStep(_boardModel, result, spawnInfo);
-                //消除動態表演(逐線處理)
-                foreach (MatchLine line in result.Line)
-                {
-                    comboCount++;//正確計算連鎖的位子
-                    Debug.Log($"連鎖：{comboCount} !!");
-                    await _boardView.AnimateClearAsync(line.Coords, _clearAnimationDuration);
-                    //視需求決定是否停置時間
-                }
+                //清除資料(依組別排除特殊石的資料)
+                ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnInfo);
+
+                comboCount++;//計算連鎖數
+                await _boardView.AnimateClearAsync(clearStepResult.ClearedCoords, _clearAnimationDuration);
+                
                 //特殊寶石產生判斷
                 if (spawnInfo.HasSpecialGem)
                 {

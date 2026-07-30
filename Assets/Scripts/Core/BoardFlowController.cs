@@ -62,15 +62,38 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="board"></param>
         /// <param name="result"></param>
-        public void ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo)
+        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo)
         {
             State = BoardState.Clearing;
             List<CellCoord> coords = result.GetUniqueCoords();
             RemoveSpawnCoord(coords, spawnInfo);
+            //設置特殊石
+            ApplySpecialSpawn(board, spawnInfo);
             //清除資料
             board.ClearGems(coords);
+
+            return new ClearStepResult(coords, ClearGemTypes(board, coords));
         }
 
+        /// <summary>
+        /// 清除寶石的顏色
+        /// </summary>
+        /// <param name="board"></param>
+        /// <param name="coords"></param>
+        /// <returns></returns>
+        private List<GemType> ClearGemTypes(BoardModel board, List<CellCoord> coords)
+        {
+            List <GemType> list = new List<GemType>();
+            for (int i = 0; i < coords.Count; i++)
+            {
+                CellCoord coord = coords[i];
+                if (board.HasGem(coord))
+                {
+                    list.Add(board.GetGemColor(coord));
+                }
+            }
+            return list;
+        }
         /// <summary>
         /// 從清單排除特殊石
         /// </summary>
@@ -88,6 +111,17 @@ namespace MatchGems.Core
                     return;
                 }
             }
+        }
+
+        /// <summary>
+        /// 確認特殊石的生成
+        /// </summary>
+        /// <param name="board"></param>
+        /// <param name="spawnInfo"></param>
+        private void ApplySpecialSpawn(BoardModel board, SpecialGemSpawnInfo spawnInfo)
+        {
+            if (!spawnInfo.HasSpecialGem) return;
+            board.SetGem(spawnInfo.SpawnCoord, spawnInfo.GemData);
         }
 
         /// <summary>
@@ -118,7 +152,12 @@ namespace MatchGems.Core
             State = BoardState.Filling;
             return _fillService.Fill(board);
         }
-
+        /// <summary>
+        /// 對外的公開接口
+        /// </summary>
+        /// <param name="result"></param>
+        /// <param name="moveCells"></param>
+        /// <returns></returns>
         public SpecialGemSpawnInfo CreateSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
         {
             return CreateSpecialGemSpawn(result, moveCells);
