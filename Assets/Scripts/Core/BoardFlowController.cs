@@ -173,24 +173,24 @@ namespace MatchGems.Core
         private SpecialGemSpawnInfo CreateSpecialGemSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
         {
             //搜尋是否含特殊連線
-            MatchLine matchLine = FindSpecialLine(result, moveCells, out bool isBestCoord, out CellCoord bestCoord);
+            MatchLine matchLine = FindSpecialLine(result, moveCells, out CellCoord bestCoord);
             //優先序：5連 > TL5連 > 4連
             if (matchLine != null && matchLine.Length >= 5)
-            {//5連
+            {//Debug.Log("5連");
                 return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, matchLine.CenterCoord);
             }
 
             if (TryFindBombSpawn(result, out SpecialGemSpawnInfo bombSpawn))
-            {//TL5連
+            {//Debug.Log("TL5連");
                 return bombSpawn;
             }
 
             if (matchLine != null)
-            {//4連
-                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, isBestCoord, bestCoord);
+            {//Debug.Log("4連");
+                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, bestCoord);
             }
 
-            //一般
+            //Debug.Log("一般");
             return SpecialGemSpawnInfo.None;
         }
 
@@ -215,23 +215,25 @@ namespace MatchGems.Core
                     if (lineA.Direction == lineB.Direction || lineA.Color != lineB.Color) continue;
                     //產生炸彈訂單
                     bombSpawn = new SpecialGemSpawnInfo(true, GemFactory.CreateBomb(lineA.Color), TryGetIntersection(lineA, lineB));
+                    return true;
                 }
             }
 
             return false;
         }
-
-        private MatchLine FindSpecialLine(MatchResult result, IReadOnlyList<CellCoord> moveCells, out bool isBestCoord, out CellCoord bestCoord)
+        /// <summary>
+        /// 找特殊直線 4｜5 連
+        /// </summary>
+        private MatchLine FindSpecialLine(MatchResult result, IReadOnlyList<CellCoord> moveCells, out CellCoord bestCoord)
         {
             MatchLine line = null;
-            isBestCoord = false;
             bestCoord = new CellCoord(0, 0);
 
             for (int i = 0; i < result.LineCount; i++)
             {
                 if (result.Line[i].Length < 4) continue;
-                isBestCoord = true;
                 bestCoord = TryGetKeyGemCoord(result.Line[i], moveCells);
+                line = result.Line[i];
             }
 
             return line;

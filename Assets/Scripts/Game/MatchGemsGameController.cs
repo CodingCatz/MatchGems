@@ -97,6 +97,7 @@ namespace MatchGems.Game
             if (!_boardFlowController.TrySwap(_boardModel, from, to)) return;
             //嘗試執行交換動畫(純視覺)
             await _boardView.AnimateSwapAsync(from, to, _swapAnimationDuration);
+
             //動畫任務結束：檢查是否為無效移動(沒配對)
             MatchResult result = _boardFlowController.FindMatches(_boardModel);
 
