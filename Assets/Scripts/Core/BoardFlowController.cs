@@ -92,8 +92,9 @@ namespace MatchGems.Core
         public ClearStepResult DetonactionStep(DetonationChain chain)
         {
             State = BoardState.Clearing;
-            List<CellCoord> coords = _specialGemActivator.ExpandNextLayer(chain);
-
+            List<CellCoord> coords = _specialGemActivator.ExpandNextLayer(chain);          
+            //Debug.Log($"炸板數量：{coords.Count}!!!");
+            chain.Board.ClearGems(coords);
             return new ClearStepResult(coords, ClearGemTypes(chain.Board, coords));
         }
 

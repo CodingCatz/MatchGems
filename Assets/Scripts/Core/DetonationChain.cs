@@ -16,6 +16,7 @@ namespace MatchGems.Core
         /// </summary>
         private readonly HashSet<int> _seen = new HashSet<int>();
         private readonly List<DetonationFuse> _fuses = new List<DetonationFuse>();
+        private readonly List<DetonationFuse> _list = new List<DetonationFuse>();
         #endregion 基本參數
 
         #region 公開屬性
@@ -56,9 +57,10 @@ namespace MatchGems.Core
 
         public IReadOnlyList<DetonationFuse> TakeFuses()
         {
-            IReadOnlyList<DetonationFuse> list = _fuses;
+            _list.Clear();
+            _list.AddRange(_fuses);
             _fuses.Clear();
-            return list;
+            return _list;
         }
         #endregion 公開方法
 
