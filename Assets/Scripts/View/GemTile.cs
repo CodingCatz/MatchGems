@@ -33,7 +33,7 @@ namespace MatchGems.View
         public void SetGem(GemData gemData)
         {
             SpriteRenderer.sprite = GetDefaultSprite();
-            SpriteRenderer.color = GetColor(gemData.Color);
+            SpriteRenderer.color = GetColor(gemData);
             transform.localScale = Vector3.one * _tileScale;
         }
 
@@ -142,6 +142,29 @@ namespace MatchGems.View
                 case GemType.Pink: return Color.pink;
             }
             return Color.white;
+        }
+        /// <summary>
+        /// 有套用特殊能力的顏色變體(多型)
+        /// </summary>
+        /// <param name="gemData"></param>
+        /// <returns></returns>
+        private Color GetColor(GemData gemData)
+        {
+            switch (gemData.Power)
+            {
+                case GemPower.HLine:
+                case GemPower.VLine:
+                    return Color.Lerp(GetColor(gemData.Color), Color.white, 0.5f);
+
+                case GemPower.Bomb: 
+                    return Color.Lerp(GetColor(gemData.Color), Color.white, 0.75f);
+
+                case GemPower.Rainbow:
+                    return Color.white;
+
+                default:
+                    return GetColor(gemData.Color);
+            }
         }
         #endregion 私有功能
     }

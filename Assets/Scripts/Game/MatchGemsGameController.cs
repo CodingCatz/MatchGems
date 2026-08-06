@@ -3,6 +3,7 @@ using MatchGems.View;
 using MatchGems.Inputs;
 using UnityEngine;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace MatchGems.Game
 {
@@ -121,7 +122,7 @@ namespace MatchGems.Game
                 SpecialGemSpawnInfo spawnInfo = _boardFlowController.CreateSpawn(result, _moveCells);
 
                 //清除資料(依組別排除特殊石的資料)
-                ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnInfo);
+                ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnInfo, out DetonationChain chain);
 
                 comboCount++;//計算連鎖數
                 await _boardView.AnimateClearAsync(clearStepResult.ClearedCoords, _clearAnimationDuration);
@@ -131,6 +132,9 @@ namespace MatchGems.Game
                 {
                     _boardView.RefreshGem(_boardModel, spawnInfo.SpawnCoord);
                 }
+
+                //特殊石引爆：獨立多層連鎖運算
+                await RunDetonactionAsync(chain);
 
 
                 //套用重力：落下資料
@@ -146,6 +150,16 @@ namespace MatchGems.Game
             }
             //無任何天降配對後
             _boardFlowController.SetIdle();//回到待機
+        }
+
+        private async Task RunDetonactionAsync(DetonationChain chain)
+        {
+            while (chain.HasFuses)
+            {
+                ClearStepResult result = _boardFlowController.DetonactionStep(chain);
+
+                await _boardView.AnimateClearAsync(result.ClearedCoords, _clearAnimationDuration);
+            }
         }
         #endregion 私有方法
 

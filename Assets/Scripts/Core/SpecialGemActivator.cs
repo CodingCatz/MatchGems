@@ -9,8 +9,10 @@ namespace MatchGems.Core
     public class SpecialGemActivator
     {
         #region 公開方法
-
-        public void BeginChain(BoardModel board, IReadOnlyList<CellCoord> coords, SpecialGemSpawnInfo spawnInfo)
+        /// <summary>
+        /// 開始記錄連鎖，回報連鎖資料物件
+        /// </summary>
+        public DetonationChain BeginChain(BoardModel board, IReadOnlyList<CellCoord> coords, SpecialGemSpawnInfo spawnInfo)
         {
             //建立連鎖資料
             DetonationChain chain = new DetonationChain(board, spawnInfo);
@@ -18,6 +20,8 @@ namespace MatchGems.Core
             {
                 chain.TryRegister(coords[i]);
             }
+
+            return chain;
         }
         /// <summary>
         /// 展開下一層能被特殊石引爆的格子清單

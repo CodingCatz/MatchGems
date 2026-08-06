@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MatchGems.Core
@@ -18,6 +19,10 @@ namespace MatchGems.Core
         /// 寶石填充服務
         /// </summary>
         private readonly FillService _fillService = new FillService();
+        /// <summary>
+        /// 特殊石能力催化系統
+        /// </summary>
+        private readonly SpecialGemActivator _specialGemActivator = new SpecialGemActivator();
         #endregion 基本組件
 
         #region 公開參數
@@ -62,17 +67,34 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="board"></param>
         /// <param name="result"></param>
-        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo)
+        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo, out DetonationChain chain)
         {
             State = BoardState.Clearing;
             List<CellCoord> coords = result.GetUniqueCoords();
             RemoveSpawnCoord(coords, spawnInfo);
+
+            //連鎖演算觸發位子
+            chain = _specialGemActivator.BeginChain(board, coords, spawnInfo);
+
             //設置特殊石
             ApplySpecialSpawn(board, spawnInfo);
             //清除資料
             board.ClearGems(coords);
 
             return new ClearStepResult(coords, ClearGemTypes(board, coords));
+        }
+
+        /// <summary>
+        /// 引爆：炸開這層的特殊石連鎖結果
+        /// </summary>
+        /// <param name="chain"></param>
+        /// <returns></returns>
+        public ClearStepResult DetonactionStep(DetonationChain chain)
+        {
+            State = BoardState.Clearing;
+            List<CellCoord> coords = _specialGemActivator.ExpandNextLayer(chain);
+
+            return new ClearStepResult(coords, ClearGemTypes(chain.Board, coords));
         }
 
         /// <summary>
