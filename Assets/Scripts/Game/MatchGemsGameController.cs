@@ -152,6 +152,11 @@ namespace MatchGems.Game
             _boardFlowController.SetIdle();//回到待機
         }
 
+        /// <summary>
+        /// 特殊能力石清板運算
+        /// </summary>
+        /// <param name="chain"></param>
+        /// <returns></returns>
         private async Task RunDetonactionAsync(DetonationChain chain)
         {
             while (chain.HasFuses)
