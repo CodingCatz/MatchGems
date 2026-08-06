@@ -122,6 +122,7 @@ namespace MatchGems.View
             tile.SetGem(board.GetGem(coord));
         }
 
+
         public void GemTileAsync(CellCoord from, CellCoord to)
         {
             GemTile tmp = _tiles[to.X, to.Y];

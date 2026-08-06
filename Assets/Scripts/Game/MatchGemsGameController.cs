@@ -175,5 +175,28 @@ namespace MatchGems.Game
             //遊戲正在執行邏輯運算，阻擋任何即時性操作
         }
         #endregion 生命週期
+
+        [ContextMenu("強制更新所有寶石")]
+        public void RefreshAllGems()
+        {
+            for (int y = 0; y < _boardModel.Height; y++)
+                for (int x = 0; x < _boardModel.Width; x++)
+                {
+                    CellCoord coord = new CellCoord(x, y);
+                    _boardView.RefreshGem(_boardModel, coord);
+                }
+        }
+
+        [ContextMenu("強制更新所有寶石變普通")]
+        public void RefreshAllGemsToNormal()
+        {
+            for (int y = 0; y < _boardModel.Height; y++)
+                for (int x = 0; x < _boardModel.Width; x++)
+                {
+                    CellCoord coord = new CellCoord(x, y);
+                    _boardModel.GetGem(coord).SetPower();
+                    _boardView.RefreshGem(_boardModel, coord);
+                }
+        }
     }
 }

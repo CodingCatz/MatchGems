@@ -13,7 +13,7 @@
         /// <summary>
         /// 特殊能力
         /// </summary>
-        public GemPower Power { get; }
+        public GemPower Power { get; private set; }
         /// <summary>
         /// 是否為特殊寶石
         /// </summary>
@@ -27,6 +27,11 @@
             Power = power;
         }
         #endregion 建構式
+
+        public void SetPower(GemPower power = GemPower.Normal)
+        {
+            Power = power;
+        }
     }
 }
 

@@ -57,8 +57,8 @@ namespace MatchGems.Core
 
         public IReadOnlyList<DetonationFuse> TakeFuses()
         {
-            _list.Clear();
-            _list.AddRange(_fuses);
+            _list.Clear();//
+            _list.AddRange(_fuses);//資料合併
             _fuses.Clear();
             return _list;
         }
