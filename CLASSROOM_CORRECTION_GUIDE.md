@@ -49,7 +49,7 @@
 
 以下編號就是學員動手順序，不是問題嚴重度排序：
 
-1. `GridMapper.ToCell`：先讓 Cell 座標可信。
+1. `GemTile → BoardView → GridMapper.ToCell`：先換實體圖並建立非 1 格尺寸，再讓 Cell 座標可信。
 2. `BoardInput`：統一像素門檻並修正第二次點擊目標。
 3. `BoardFlowController.TrySwap`：所有陣列操作前封住界外座標。
 4. `FillService → BoardFlowController → GameController`：atomic 加入無既有三消初盤。
@@ -70,6 +70,7 @@
 
 ### 本段目標
 
+- 把程式產生的白方塊換成真正的中性寶石 Sprite，並讓圖像尺寸服從 CellWorldSize。
 - 分清楚螢幕座標、世界座標與棋盤座標。
 - 修正 `GridMapper.ToCell` 的運算順序。
 - 讓 Click → Click 與 Drag 使用各自正確的目標座標。
@@ -93,6 +94,150 @@ flowchart LR
 ```
 
 ### 修正 1：`GridMapper.ToCell` 的括號與負座標
+
+這個修正不要只用白色方塊講。先把程式產生的預設方塊換成真正的寶石 Sprite，再刻意讓 `CellWorldSize` 不等於 1；圖片、世界尺寸與點擊格一旦不同步，原公式的錯誤會直接出現在畫面上。
+
+#### ①-a `GemTile`／`BoardView`（改既有：換上實體寶石圖並依格子尺寸縮放）
+
+- **前置素材**：準備一張透明背景、白色或灰階的正方形寶石 PNG。現場版本仍用 `SpriteRenderer.color` 表示六種 `GemType`，所以不要先放六張已上色圖片；彩色圖再乘色會失真。
+- **精確落點**：`GemTile` 加入可由 Inspector 指定的 `_gemSprite`、格子尺寸設定與等比縮放；`BoardView` 在新建與 Pool 取出 Tile 時傳入 `CellWorldSize`。
+- **誰呼叫**：`BoardView.CreateTileAt` 建立初盤 Tile；`AnimateFillAsync` 從 Pool 取出補珠 Tile。
+- **原理**：Sprite 圖檔的像素與 PPU 只決定原始世界尺寸；棋盤 Cell 才是遊戲規則的尺寸來源。Tile 必須縮放去配合 Cell，不能反過來讓圖檔尺寸偷偷改變棋盤座標。
+
+**Unity 圖片匯入設定**
+
+1. 把 PNG 放進 `Assets/Art/Gems/`。
+2. Inspector 將 `Texture Type` 設為 `Sprite (2D and UI)`。
+3. `Sprite Mode` 使用 `Single`；像素風使用 `Point`，一般插畫使用 `Bilinear`。
+4. 套用設定後，把 Sprite 拖到 GemTile Prefab 新增的 `Gem Sprite` 欄位。
+5. 不要只拖到 `SpriteRenderer.Sprite`：目前 `SetGem` 會在執行時重新指定 Sprite，必須完成下面的程式接線。
+
+`Assets/Scripts/View/GemTile.cs`：在 `_tileScale` 後新增欄位。`_tileScale` 從這一步開始代表「圖片占格子的比例」，`0.9` 就是保留 10% 格間距。
+
+```csharp
+[SerializeField]
+private Sprite _gemSprite;
+
+private float _cellWorldSize = 1f;
+```
+
+在 `#region 公開功能` 最前面新增：
+
+```csharp
+/// <summary>告訴 Tile 一格在世界座標中有多大。</summary>
+public void ConfigureCellSize(float cellWorldSize)
+{
+    _cellWorldSize = Mathf.Max(0.01f, cellWorldSize);
+    ApplyVisualScale();
+}
+```
+
+完整取代 `SetGem`。這裡不再無條件呼叫 `GetDefaultSprite()`：有指定實體圖就用實體圖，沒有才使用白方塊備案。
+
+```csharp
+public void SetGem(GemData gemData)
+{
+    SpriteRenderer.sprite = GetDisplaySprite();
+    SpriteRenderer.color = GetColor(gemData);
+    ApplyVisualScale();
+}
+```
+
+在 `#region 私有功能`、`GetDefaultSprite` 前新增：
+
+```csharp
+private Sprite GetDisplaySprite()
+{
+    return _gemSprite != null ? _gemSprite : GetDefaultSprite();
+}
+
+private void ApplyVisualScale()
+{
+    Sprite sprite = GetDisplaySprite();
+    float sourceSize = Mathf.Max(
+        sprite.bounds.size.x,
+        sprite.bounds.size.y);
+
+    if (sourceSize <= 0f)
+    {
+        return;
+    }
+
+    float targetSize = _cellWorldSize * _tileScale;
+    float scale = targetSize / sourceSize;
+    transform.localScale = Vector3.one * scale;
+}
+```
+
+`Assets/Scripts/View/BoardView.cs`：完整取代 `CreateTileAt`，讓初盤建立的 Tile 取得格子尺寸。
+
+```csharp
+private GemTile CreateTileAt(Vector3 pos)
+{
+    GemTile tile = Instantiate(
+        _tilePrefab,
+        pos,
+        Quaternion.identity,
+        transform);
+
+    tile.ConfigureCellSize(CellWorldSize);
+    return tile;
+}
+```
+
+同一檔案的 `AnimateFillAsync` 中，找到從 Pool 取出 Tile 的位置：
+
+```csharp
+GemTile tile = _tilePool.Get(
+    SpawnAbove(board, fill.From),
+    board.GetGem(fill.From));
+```
+
+緊接著加入：
+
+```csharp
+tile.ConfigureCellSize(CellWorldSize);
+```
+
+> ①-a 是 `GemTile`＋`BoardView` 的 atomic step。只改 `GemTile` 而沒有讓 Pool 取出的 Tile 重新取得 CellWorldSize，初盤看起來正常，第一次補珠卻可能忽然變回另一種尺寸。
+
+**換圖後立即驗證**
+
+- Prefab 有指定 Sprite：Play 後顯示實體寶石圖，不再被白方塊覆蓋。
+- 暫時清空 `Gem Sprite`：仍能退回程式產生的白方塊，不出現 NullReference。
+- 使用不同解析度與 PPU 的寶石圖：圖片仍占 Cell 的約 90%，不改變棋盤座標。
+- 消除再補珠：Pool 取出的新珠尺寸與初盤一致。
+
+#### ①-b 用實體圖建立 `CellWorldSize != 1` 的除錯情境
+
+在 `BoardView` Inspector 暫時設定：
+
+```text
+Cell Size     = 128
+Pixel Per Unit = 64
+CellWorldSize  = 128 / 64 = 2
+```
+
+此時一格寬 2 個 Unity 世界單位。若 Origin 位於世界 X=0，格子中心與邊界如下：
+
+```text
+格子編號        -1               0               1
+世界邊界   -3──────────-1──────────1──────────3
+格子中心        -2               0               2
+```
+
+拿四個位置請學員先預測，再讓程式印出結果：
+
+| 世界位置 X | 正確 Cell X | 判斷理由 |
+|---:|---:|---|
+| `-1.1` | `-1` | 位於 Cell -1 的右半部 |
+| `-0.9` | `0` | 已越過 -1 邊界 |
+| `0.9` | `0` | 尚未越過 +1 邊界 |
+| `1.1` | `1` | 已進入 Cell 1 |
+
+錯誤公式會把格子尺寸在 `* 0.5 / cellSize` 中抵消，因此寶石圖雖然已按照 2 單位排開，點擊換算仍像每格只有 1 單位。這就是「換圖之後才突然點歪」的真正原因：圖片只是讓原本被 `CellWorldSize = 1` 掩蓋的公式錯誤現形。
+
+#### ①-c `Assets/Scripts/Core/GridMapper.cs`（改既有：修正世界座標轉格子）
 
 **目前症狀**
 
@@ -122,8 +267,10 @@ public CellCoord ToCell(Vector3 worldPos)
 
 **立即驗證**
 
-- 將 CellWorldSize 改成 `2`，點第 `(3,2)` 格，Log 必須仍是 `(3,2)`。
+- 保持 `CellWorldSize = 2`，依序點世界 X=`-1.1 / -0.9 / 0.9 / 1.1`，Log 必須得到 Cell X=`-1 / 0 / 0 / 1`。
+- 點畫面上的第 `(3,2)` 顆實體寶石，Log 必須仍是 `(3,2)`；圖片大小不能影響索引結果。
 - 點棋盤左邊界外一點，X 必須是負數，不能被截成 `0`。
+- 驗證完成後可把 `Cell Size`／`Pixel Per Unit` 調回正式美術規格，但不准把它們調回剛好等於 1 當成修好。
 
 ### 修正 2：拖曳門檻統一使用螢幕像素
 
@@ -503,13 +650,16 @@ if (!board.HasGem(start))
 ```csharp
 public void ResetGem(Vector3 pos, GemData gemData)
 {
+    SpriteRenderer.sprite = GetDisplaySprite();
     SpriteRenderer.color = GetColor(gemData);
     transform.position = pos;
-    transform.localScale = Vector3.one * _tileScale;
+    ApplyVisualScale();
 }
 ```
 
-**立即驗證**：同一個 Tile 先顯示普通紅石，Release 後用紅色 Bomb 資料 Get；顏色必須是 Bomb 變體，不能仍是普通紅。
+這裡的 `GetDisplaySprite` 與 `ApplyVisualScale` 來自 ①-a；因此第 ⑪ 步不是另寫一套圖片流程，而是讓 Pool 重設也走同一條既有責任線。
+
+**立即驗證**：同一個 Tile 先顯示普通紅石，Release 後用紅色 Bomb 資料 Get；顏色必須是 Bomb 變體，實體 Sprite 與 Cell 比例也必須保持不變。
 
 ### 第二段完成檢查
 
