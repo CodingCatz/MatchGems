@@ -34,6 +34,36 @@
 | 11 | P2 | Pool 重設時只套用普通色 | 特殊石經物件池重用後可能失去特殊外觀 | `GemTile.cs` |
 | 12 | P2 | 非同步流程沒有 `try/finally` 保底 | 動畫丟例外後可能永遠維持 Busy | `MatchGemsGameController.cs` |
 
+## 階段性程式碼
+
+### 本次增量
+
+這份補充課不建立另一套專案；學員從 `774f126` 的現場程式繼續修改：
+
+- **改既有**：`GridMapper`、`BoardInput`、`FillService`、`BoardFlowController`、`MatchFinder`。
+- **改既有**：`GemTile`、`BoardView`、`MatchGemsGameController`。
+- **不新增 Runtime 類別**：避免除錯課同時擴大架構範圍。
+- **新增的只有方法**：`FillInitial`、特殊線比較方法、`DetonationPopAsync`、`AnimateDetonationAsync`。
+
+### 本次實作順序
+
+以下編號就是學員動手順序，不是問題嚴重度排序：
+
+1. `GridMapper.ToCell`：先讓 Cell 座標可信。
+2. `BoardInput`：統一像素門檻並修正第二次點擊目標。
+3. `BoardFlowController.TrySwap`：所有陣列操作前封住界外座標。
+4. `FillService → BoardFlowController → GameController`：atomic 加入無既有三消初盤。
+5. `BoardFlowController.ClearStep / DetonationStep`：清除前留下顏色快照。
+6. `MatchFinder.ScanLine`：允許掃描暫時有洞的棋盤。
+7. `GemTile.ResetGem`：Pool 重用時套用完整 GemData。
+8. `TryFindBombSpawn + TryGetIntersection`：atomic 阻止假交叉炸彈。
+9. `CreateSpecialGemSpawn + FindBestSpecialLine`：實作五連／T-L／四連優先序。
+10. `GemTile → BoardView → GameController`：atomic 接上可辨識的引爆拍並修正回收時機。
+11. `MatchGemsGameController.TrySwap`：最後用 `try/finally` 收住整條非同步流程。
+12. 依固定盤面回歸表重跑；前一步沒過，不進下一步。
+
+每一步下面都會再次寫明落點、取代範圍、呼叫端、原理、程式碼與立即驗證。標為 atomic 的步驟必須一次完成整組檔案，不能在中間狀態按 Play。
+
 ---
 
 ## 第一段：輸入座標不是同一種單位（約 45 分鐘）
@@ -74,9 +104,9 @@ int x = (int)(local.x + _cellWorldSize * 0.5f / _cellWorldSize);
 
 **修正落點**
 
-檔案：`Assets/Scripts/Core/GridMapper.cs`  
-方法：`ToCell(Vector3 worldPos)`  
-呼叫端：`BoardInput.ScreenToCell`
+- **檔案與動作**：`Assets/Scripts/Core/GridMapper.cs`，完整取代 `ToCell(Vector3 worldPos)`。
+- **誰呼叫**：`BoardInput.ScreenToCell`。
+- **原理**：先把帶半格偏移的世界距離除以格子尺寸，再向下取整；不能先讓尺寸在乘除中自行抵消。
 
 ```csharp
 public CellCoord ToCell(Vector3 worldPos)
@@ -103,8 +133,9 @@ public CellCoord ToCell(Vector3 worldPos)
 
 **修正落點**
 
-檔案：`Assets/Scripts/Input/BoardInput.cs`  
-欄位與方法：`_dragThreshold`、`Configure`
+- **檔案與動作**：`Assets/Scripts/Input/BoardInput.cs`，取代 `_dragThreshold` 欄位與 `Configure` 方法。
+- **誰呼叫**：`MatchGemsGameController.ConfigureInput` 呼叫 `Configure`；`EndPointer` 讀取門檻。
+- **原理**：`_dragDelta` 是螢幕像素，因此門檻也必須是螢幕像素。
 
 ```csharp
 [SerializeField, Min(1f)]
@@ -132,8 +163,9 @@ public void Configure(GridMapper gridMapper)
 
 **修正落點**
 
-檔案：`Assets/Scripts/Input/BoardInput.cs`  
-方法：`EndPointer`、`SelectOrSwap`
+- **檔案與動作**：`Assets/Scripts/Input/BoardInput.cs`，完整取代 `EndPointer` 與 `SelectOrSwap`。
+- **誰呼叫**：`Update` 在 Pointer Up 時呼叫 `EndPointer`；`EndPointer` 在點擊分支呼叫 `SelectOrSwap(clickedCoord)`。
+- **原理**：拖曳目標是從方向推導，點擊目標則是第二次實際點到的格；兩條輸入路徑不能共用殘留欄位。
 
 ```csharp
 private void EndPointer(Vector2 upPos)
@@ -179,8 +211,9 @@ private void SelectOrSwap(CellCoord clickedCoord)
 
 **修正落點**
 
-檔案：`Assets/Scripts/Core/BoardFlowController.cs`  
-方法：`TrySwap`
+- **檔案與動作**：`Assets/Scripts/Core/BoardFlowController.cs`，完整取代 `TrySwap`。
+- **誰呼叫**：`MatchGemsGameController.TrySwap` 在任何動畫前先呼叫這個資料守門。
+- **原理**：`BoardModel.SwapGems` 直接索引二維陣列，因此兩個座標都必須先通過 `IsInside`。
 
 ```csharp
 public bool TrySwap(BoardModel board, CellCoord from, CellCoord to)
@@ -249,6 +282,107 @@ sequenceDiagram
 - 消除後補珠保留 `Fill`：允許新珠形成天降連鎖，否則遊戲不會自然 combo。
 - 不要把「禁止三消」塞進共用的 `CreateRandomGem`，因為初盤與補珠的需求不同。
 
+#### ⑤-a `Assets/Scripts/Core/FillService.cs`（改既有：加入初盤專用填充）
+
+- **精確落點**：保留原本的 `Fill(BoardModel board)` 與 `CreateRandomGem()`；在 `#region 公開方法` 加入 `FillInitial`，並在 `#region 私有方法` 加入三個判斷方法。
+- **誰呼叫**：下一步的 `BoardFlowController.FillInitial`。
+- **原理**：掃描順序固定為由下到上、由左到右，因此放置 `(x,y)` 時，只要檢查左兩格與下兩格，就能阻止新珠立刻形成三連；消除後的 `Fill` 不走這條限制，仍保留天降 combo。
+
+加入 `#region 公開方法`：
+
+```csharp
+/// <summary>建立初盤：填滿空格，但不允許開局就存在三連。</summary>
+public void FillInitial(BoardModel board)
+{
+    for (int y = 0; y < board.Height; y++)
+    {
+        for (int x = 0; x < board.Width; x++)
+        {
+            CellCoord target = new CellCoord(x, y);
+            board.SetGem(target, PickInitialGem(board, target));
+        }
+    }
+}
+```
+
+加入 `#region 私有方法`；若檔案尚無這個 region，就放在 `#endregion 公開方法` 之前並補上區塊：
+
+```csharp
+private GemType PickInitialGem(BoardModel board, CellCoord target)
+{
+    int gemCount = Enum.GetValues(typeof(GemType)).Length;
+
+    // 六色盤一定找得到候選；上限避免未來顏色規則改壞時卡死。
+    for (int attempt = 0; attempt < 20; attempt++)
+    {
+        GemType candidate = (GemType)Random.Range(0, gemCount);
+
+        if (!WouldCreateInitialMatch(board, target, candidate))
+        {
+            return candidate;
+        }
+    }
+
+    // 安全網：不讓初始化無限迴圈。若走到這裡，要用 Log 回頭查規則。
+    return CreateRandomGem();
+}
+
+private bool WouldCreateInitialMatch(
+    BoardModel board,
+    CellCoord target,
+    GemType candidate)
+{
+    bool makesHorizontal =
+        HasSameColor(board, new CellCoord(target.X - 1, target.Y), candidate) &&
+        HasSameColor(board, new CellCoord(target.X - 2, target.Y), candidate);
+
+    bool makesVertical =
+        HasSameColor(board, new CellCoord(target.X, target.Y - 1), candidate) &&
+        HasSameColor(board, new CellCoord(target.X, target.Y - 2), candidate);
+
+    return makesHorizontal || makesVertical;
+}
+
+private bool HasSameColor(
+    BoardModel board,
+    CellCoord target,
+    GemType candidate)
+{
+    return board.HasGem(target) && board.GetGemColor(target) == candidate;
+}
+```
+
+檔頭原本已經有 `using System;`、`using Random = UnityEngine.Random;`，不需要重複加入。
+
+#### ⑤-b `Assets/Scripts/Core/BoardFlowController.cs`（改既有：公開初盤入口）
+
+- **精確落點**：在目前的 `Fill(BoardModel board)` 前面新增方法；原 `Fill` 保留給消除後補珠。
+- **誰呼叫**：`MatchGemsGameController.CreateBoard`。
+
+```csharp
+/// <summary>建立不含既有三連的初始盤面。</summary>
+public void FillInitial(BoardModel board)
+{
+    _fillService.FillInitial(board);
+}
+```
+
+#### ⑤-c `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：切換初盤呼叫）
+
+- **精確落點**：在 `CreateBoard()` 內，只取代最後一行填充呼叫。
+- **取代前**：`_boardFlowController.Fill(_boardModel);`
+- **取代後**：
+
+```csharp
+private void CreateBoard()
+{
+    _boardModel = new BoardModel(_width, _height);
+    _boardFlowController.FillInitial(_boardModel);
+}
+```
+
+> ⑤-a～⑤-c 是一個 atomic step：三處都完成才按編譯。只改 Controller、還沒建立 `FillInitial` 時會得到 `CS1061`，那不是新 Bug，而是步驟尚未完成。
+
 **固定盤面判準**
 
 - 連續建立 100 張 8×8 初盤，每張初盤的 `FindMatches().HasMatch` 都必須是 `false`。
@@ -260,45 +394,91 @@ sequenceDiagram
 
 現場程式先執行 `board.ClearGems(coords)`，才呼叫 `ClearGemTypes(board, coords)`；這時 `board.HasGem(coord)` 已經全部是 `false`。
 
-**修正落點**
+#### ⑥ `Assets/Scripts/Core/BoardFlowController.cs`（改既有：一次完成讀證據與清格）
 
-檔案：`Assets/Scripts/Core/BoardFlowController.cs`  
-方法：`ClearStep`、`DetonactionStep`
+- **精確落點**：完整取代 `ClearStep`、把 `DetonactionStep` 完整改名並取代成 `DetonationStep`；刪除舊的 `ClearGemTypes`，改放下面的 `ClearCoords`。
+- **誰呼叫**：`MatchGemsGameController.TrySwap` 呼叫 `ClearStep`；`RunDetonationAsync` 呼叫 `DetonationStep`。
+- **原理**：每一格都必須依序執行「還有寶石 → 讀顏色 → 清除」。若整批清完才回頭讀，證據已不存在。
+
+完整取代 `ClearStep`：
 
 ```csharp
-private static List<GemType> CaptureGemTypes(
+public ClearStepResult ClearStep(
     BoardModel board,
-    IReadOnlyList<CellCoord> coords)
+    MatchResult result,
+    SpecialGemSpawnInfo spawnInfo,
+    out DetonationChain chain)
 {
-    List<GemType> result = new List<GemType>();
+    State = BoardState.Clearing;
 
-    for (int i = 0; i < coords.Count; i++)
-    {
-        if (board.HasGem(coords[i]))
-        {
-            result.Add(board.GetGemColor(coords[i]));
-        }
-    }
+    List<CellCoord> coords = result.GetUniqueCoords();
+    RemoveSpawnCoord(coords, spawnInfo);
 
-    return result;
+    // 必須在清格前登記：清掉之後讀不到特殊石的 Power。
+    chain = _specialGemActivator.BeginChain(board, coords, spawnInfo);
+
+    List<GemType> clearedGemTypes = new List<GemType>();
+    ClearCoords(board, coords, clearedGemTypes);
+
+    // 生成格已從 coords 排除，所以清完普通配對後再把特殊石放回去。
+    ApplySpecialSpawn(board, spawnInfo);
+
+    return new ClearStepResult(coords, clearedGemTypes);
 }
 ```
 
-呼叫順序固定為：
+完整取代並更名 `DetonactionStep`：
 
 ```csharp
-List<GemType> clearedGemTypes = CaptureGemTypes(board, coords);
-board.ClearGems(coords);
-return new ClearStepResult(coords, clearedGemTypes);
+public ClearStepResult DetonationStep(DetonationChain chain)
+{
+    State = BoardState.Clearing;
+
+    List<CellCoord> coords = _specialGemActivator.ExpandNextLayer(chain);
+    List<GemType> clearedGemTypes = new List<GemType>();
+    ClearCoords(chain.Board, coords, clearedGemTypes);
+
+    return new ClearStepResult(coords, clearedGemTypes);
+}
 ```
 
-一般配對與引爆清除都要遵守相同順序。
+刪除舊的 `ClearGemTypes`，在 `#region 私有方法` 加入：
+
+```csharp
+private static void ClearCoords(
+    BoardModel board,
+    IReadOnlyList<CellCoord> coords,
+    List<GemType> clearedGemTypes)
+{
+    for (int i = 0; i < coords.Count; i++)
+    {
+        CellCoord coord = coords[i];
+
+        if (!board.HasGem(coord))
+        {
+            continue;
+        }
+
+        clearedGemTypes.Add(board.GetGemColor(coord));
+        board.ClearGem(coord);
+    }
+}
+```
+
+**立即驗證**
+
+- 固定清除紅、藍、綠三顆；清除後三格 `HasGem == false`，結果仍依序保有三筆顏色。
+- 搜尋全專案 `DetonactionStep`，修完這一步後只能剩文件中的舊名說明；C# 呼叫端要在第三段一併改成 `DetonationStep`。
 
 ### 防禦修正：掃描起點可能是空格
 
 `MatchFinder.ScanLine` 第一行直接呼叫 `board.GetGemColor(start)`。目前主流程通常在補滿後才掃描，所以不一定立即觸發；但方法契約沒有保證永遠滿盤。
 
-建議在讀顏色前處理空格，並推進到下一格，避免迴圈停住：
+#### ⑩ `Assets/Scripts/Core/MatchFinder.cs`（改既有：讀顏色前先處理空格）
+
+- **精確落點**：在 `ScanLine` 方法開頭、`GemType color = board.GetGemColor(start);` 之前插入。
+- **誰呼叫**：`FindHorizontal` 與 `FindVertical`。
+- **原理**：空格本身不是配對起點，但仍必須把掃描索引往下一格推進；只 `return` 原索引會讓 `while` 永遠停在同一格。
 
 ```csharp
 if (!board.HasGem(start))
@@ -308,12 +488,17 @@ if (!board.HasGem(start))
 }
 ```
 
+**立即驗證**：清空 `(2,2)` 後直接呼叫 `FindMatches`；沒有 NullReference，兩個方向的掃描都能越過空格並結束。
+
 ### 防禦修正：Pool 重設要使用完整 `GemData`
 
 `GemTile.SetGem` 使用 `GetColor(gemData)`，但 `ResetGem` 卻使用 `GetColor(gemData.Color)`。特殊石經過 Pool 重用時，Power 的外觀資訊會被忽略。
 
-檔案：`Assets/Scripts/View/GemTile.cs`  
-方法：`ResetGem`
+#### ⑪ `Assets/Scripts/View/GemTile.cs`（改既有：完整取代 `ResetGem`）
+
+- **精確落點**：完整取代目前的 `ResetGem(Vector3 pos, GemData gemData)`。
+- **誰呼叫**：`GemTilePool.Get` 每次取出舊 Tile 時呼叫。
+- **原理**：Pool 內重用的是 View 物件，不是舊 GemData；每次 Get 都必須用新資料完整重設位置、縮放與 Power 外觀。
 
 ```csharp
 public void ResetGem(Vector3 pos, GemData gemData)
@@ -323,6 +508,8 @@ public void ResetGem(Vector3 pos, GemData gemData)
     transform.localScale = Vector3.one * _tileScale;
 }
 ```
+
+**立即驗證**：同一個 Tile 先顯示普通紅石，Release 後用紅色 Bomb 資料 Get；顏色必須是 Bomb 變體，不能仍是普通紅。
 
 ### 第二段完成檢查
 
@@ -349,7 +536,53 @@ public void ResetGem(Vector3 pos, GemData gemData)
 
 `TryGetIntersection` 只用直線的 X 與橫線的 Y 算出候選座標，沒有確認候選點真的被兩條 `MatchLine` 包含。兩條分離的同色線也可能生成炸彈，甚至覆蓋無關寶石。
 
-**修正判準**
+#### ⑦ `Assets/Scripts/Core/BoardFlowController.cs`（改既有：呼叫端與交叉判斷一起取代）
+
+- **精確落點**：完整取代 `TryFindBombSpawn` 與 `TryGetIntersection`。兩個方法是一個 atomic step，因為前者要接後者新的 `bool + out` 簽章。
+- **誰呼叫**：`CreateSpecialGemSpawn` 在五連判定之後呼叫 `TryFindBombSpawn`。
+- **原理**：用 X/Y 算出的只是候選點；只有兩條 `MatchLine` 都包含候選點，幾何上才真的形成 T/L。
+
+完整取代 `TryFindBombSpawn`：
+
+```csharp
+private bool TryFindBombSpawn(
+    MatchResult result,
+    out SpecialGemSpawnInfo bombSpawn)
+{
+    bombSpawn = SpecialGemSpawnInfo.None;
+    IReadOnlyList<MatchLine> lines = result.Line;
+
+    for (int a = 0; a < lines.Count; a++)
+    {
+        for (int b = a + 1; b < lines.Count; b++)
+        {
+            MatchLine lineA = lines[a];
+            MatchLine lineB = lines[b];
+
+            if (lineA.Direction == lineB.Direction ||
+                lineA.Color != lineB.Color)
+            {
+                continue;
+            }
+
+            if (!TryGetIntersection(lineA, lineB, out CellCoord intersection))
+            {
+                continue;
+            }
+
+            bombSpawn = new SpecialGemSpawnInfo(
+                true,
+                GemFactory.CreateBomb(lineA.Color),
+                intersection);
+            return true;
+        }
+    }
+
+    return false;
+}
+```
+
+完整取代 `TryGetIntersection`：
 
 ```csharp
 private bool TryGetIntersection(
@@ -368,12 +601,21 @@ private bool TryGetIntersection(
         vertical.CenterCoord.X,
         horizontal.CenterCoord.Y);
 
-    intersection = candidate;
-    return horizontal.Contain(candidate) && vertical.Contain(candidate);
+    if (horizontal.Contain(candidate) && vertical.Contain(candidate))
+    {
+        intersection = candidate;
+        return true;
+    }
+
+    intersection = new CellCoord(0, 0);
+    return false;
 }
 ```
 
-`TryFindBombSpawn` 只有在這個方法回傳 `true` 時才能建立炸彈。
+**立即驗證**
+
+- 建立兩條同色但分離的橫／直 MatchLine：方法必須回傳 `false`。
+- 建立真正共享一格的 T 型：回傳 `true`，而且 SpawnCoord 正是共享格。
 
 ### 修正 8：特殊線要比較優先序，不能讓最後一條獲勝
 
@@ -381,7 +623,166 @@ private bool TryGetIntersection(
 
 `FindSpecialLine` 每遇到一條長度至少 4 的線就覆寫 `line`，結果是「最後掃到的線獲勝」。稍早找到的五連可能被後面的四連蓋掉。
 
-**修正原則**
+#### ⑧ `Assets/Scripts/Core/BoardFlowController.cs`（改既有：用具名比較取代最後一條獲勝）
+
+- **精確落點**：完整取代 `CreateSpecialGemSpawn`、`FindSpecialLine` 與 `TryGetKeyGemCoord`；新增 `IsBetterSpecialLine`、`GetSpecialLineRank`。
+- **誰呼叫**：公開的 `CreateSpawn` 沿用原接線，仍只呼叫 `CreateSpecialGemSpawn`。
+- **原理**：優先序必須是可執行比較，不能只存在註解。先比較能力級別，再比較關鍵珠，最後才比較長度。
+
+完整取代 `CreateSpecialGemSpawn`：
+
+```csharp
+private SpecialGemSpawnInfo CreateSpecialGemSpawn(
+    MatchResult result,
+    IReadOnlyList<CellCoord> moveCells)
+{
+    MatchLine bestLine = FindBestSpecialLine(
+        result,
+        moveCells,
+        out CellCoord bestCoord);
+
+    // 明確優先序：五連以上 > 真正的 T/L > 四連。
+    if (bestLine != null && bestLine.Length >= 5)
+    {
+        return GemFactory.CreateSpawnInfo(
+            bestLine.Color,
+            bestLine.Length,
+            bestLine.Direction,
+            true,
+            bestCoord);
+    }
+
+    if (TryFindBombSpawn(result, out SpecialGemSpawnInfo bombSpawn))
+    {
+        return bombSpawn;
+    }
+
+    if (bestLine != null)
+    {
+        return GemFactory.CreateSpawnInfo(
+            bestLine.Color,
+            bestLine.Length,
+            bestLine.Direction,
+            true,
+            bestCoord);
+    }
+
+    return SpecialGemSpawnInfo.None;
+}
+```
+
+刪除舊的 `FindSpecialLine`，改成：
+
+```csharp
+private MatchLine FindBestSpecialLine(
+    MatchResult result,
+    IReadOnlyList<CellCoord> moveCells,
+    out CellCoord bestCoord)
+{
+    MatchLine bestLine = null;
+    bool bestContainsKeyGem = false;
+    bestCoord = new CellCoord(0, 0);
+
+    for (int i = 0; i < result.LineCount; i++)
+    {
+        MatchLine candidate = result.Line[i];
+
+        if (candidate.Length < 4)
+        {
+            continue;
+        }
+
+        bool containsKeyGem = TryGetKeyGemCoord(
+            candidate,
+            moveCells,
+            out CellCoord candidateCoord);
+
+        if (!IsBetterSpecialLine(
+                candidate,
+                containsKeyGem,
+                bestLine,
+                bestContainsKeyGem))
+        {
+            continue;
+        }
+
+        bestLine = candidate;
+        bestContainsKeyGem = containsKeyGem;
+        bestCoord = candidateCoord;
+    }
+
+    return bestLine;
+}
+```
+
+把 `TryGetKeyGemCoord` 改成真的用回傳值表示有沒有找到 moved cell：
+
+```csharp
+private bool TryGetKeyGemCoord(
+    MatchLine line,
+    IReadOnlyList<CellCoord> moveCells,
+    out CellCoord keyCoord)
+{
+    if (moveCells != null)
+    {
+        for (int i = 0; i < moveCells.Count; i++)
+        {
+            if (line.Contain(moveCells[i]))
+            {
+                keyCoord = moveCells[i];
+                return true;
+            }
+        }
+    }
+
+    keyCoord = line.CenterCoord;
+    return false;
+}
+```
+
+加入兩個比較方法：
+
+```csharp
+private bool IsBetterSpecialLine(
+    MatchLine candidate,
+    bool candidateContainsKeyGem,
+    MatchLine current,
+    bool currentContainsKeyGem)
+{
+    if (current == null)
+    {
+        return true;
+    }
+
+    int candidateRank = GetSpecialLineRank(candidate);
+    int currentRank = GetSpecialLineRank(current);
+
+    if (candidateRank != currentRank)
+    {
+        return candidateRank > currentRank;
+    }
+
+    if (candidateContainsKeyGem != currentContainsKeyGem)
+    {
+        return candidateContainsKeyGem;
+    }
+
+    return candidate.Length > current.Length;
+}
+
+private int GetSpecialLineRank(MatchLine line)
+{
+    return line.Length >= 5 ? 2 : 1;
+}
+```
+
+這裡刻意先比 Rank，再比關鍵珠：否則「含 moved cell 的四連」仍可能壓過「不含 moved cell 的五連」，又違反五連優先。
+
+**立即驗證**
+
+- 同一份 MatchResult 依序放入五連、四連，再反過來放；兩次都必須選五連。
+- 兩條都是四連時，包含 moved cell 的那一條獲勝。
+- 真正 T/L 與四連同時存在時，沒有五連才生成炸彈。
 
 候選線至少依下列條件比較：
 
@@ -395,7 +796,7 @@ private bool TryGetIntersection(
 ### 深層機制：同方向直線石為什麼看起來分兩次消除
 
 - **觸發時機**：普通配對的清除清單中包含既有的橫消石或直消石。
-- **責任與接線**：`ClearStep` 在清除前把特殊石登記成 Fuse；Controller 先播放普通配對，再呼叫 `DetonactionStep` 展開特殊石範圍。
+- **責任與接線**：`ClearStep` 在清除前把特殊石登記成 Fuse；Controller 先播放普通配對，再呼叫 `DetonationStep` 展開特殊石範圍。
 - **資料與狀態流向**：短配對 Cells → `_seen` 與 Fuse → 清短配對 → 展開整排／整列 → `_seen` 排除已清格 → 清剩餘格。
 - **接錯症狀**：沒有 `_seen` 會重複清除甚至連鎖迴圈；兩拍都使用同一種 Pop 動畫時，正確的兩階段資料會被玩家誤認為重複處理。
 - **本段如何驗證**：固定一顆 `VerticalLine` 在直向三消中，分別記錄兩拍座標；兩份清單交集必須為空，聯集必須等於短配對加整列能力範圍。
@@ -410,7 +811,7 @@ sequenceDiagram
     F->>D: BeginChain 登記短配對 Cells 與特殊石 Fuse
     F->>M: 清除短配對
     C->>V: AnimateClearAsync 短配對
-    C->>F: DetonactionStep
+    C->>F: DetonationStep
     F->>D: 展開整排或整列
     D-->>F: 排除 seen，只回傳尚未清除 Cells
     F->>M: 清除剩餘能力範圍
@@ -432,17 +833,154 @@ sequenceDiagram
 
 #### 建議的畫面修正
 
-先保留資料與連鎖分層，不要為了畫面直接把 `ClearStep` 和 `DetonactionStep` 合併。View 可以另加特殊石演出入口，例如：
+先保留資料與連鎖分層，不要為了畫面直接把 `ClearStep` 和 `DetonationStep` 合併。以下是可直接接到目前 Repo 的最小版本：一般配對維持普通 Pop，引爆拍先變白再 Pop，讓玩家看得出第二拍來自特殊能力。
+
+#### ⑨-a `Assets/Scripts/View/GemTile.cs`（改既有：加入引爆版 Pop）
+
+- **精確落點**：在 `PopAsync` 後面新增 `DetonationPopAsync`。
+- **誰呼叫**：下一步 `BoardView.AnimateDetonationAsync`。
+- **原理**：先用最小視覺差異證明「這是能力拍」；橫向／直向掃光可等這個資料節奏驗收後再擴充。
 
 ```csharp
-await _boardView.AnimateSpecialActivationAsync(
-    fuse.Coord,
-    fuse.GemData.Power,
-    blast.ClearedCoords,
-    _clearAnimationDuration);
+public async Task DetonationPopAsync(float duration)
+{
+    Color originalColor = SpriteRenderer.color;
+    SpriteRenderer.color = Color.white;
+
+    await PopAsync(duration);
+
+    // Pool 下次 Get 前先還原；ResetGem 仍會再依 GemData 套正式顏色。
+    SpriteRenderer.color = originalColor;
+}
 ```
 
-建議演出順序：
+#### ⑨-b `Assets/Scripts/View/BoardView.cs`（改既有：動畫完成後才進 Pool）
+
+- **精確落點**：完整取代 `AnimateClearAsync`；新增 `AnimateDetonationAsync`；刪除 `ReleaseeGemTile`，改成拼字正確的 `ReleaseGemTile`。
+- **誰呼叫**：`TrySwap` 的一般配對呼叫 `AnimateClearAsync`；下一步 `RunDetonationAsync` 呼叫 `AnimateDetonationAsync`。
+- **原理**：Tile 在動畫完成前不能先進可取用的 Pool。即使目前 Fill 發生在 await 之後，先回收仍破壞「池內物件目前可安全重用」的契約。
+
+完整取代一般清除：
+
+```csharp
+public async Task AnimateClearAsync(
+    IReadOnlyList<CellCoord> coords,
+    float duration)
+{
+    List<Task> pops = new List<Task>();
+    List<CellCoord> releaseCoords = new List<CellCoord>();
+
+    for (int i = 0; i < coords.Count; i++)
+    {
+        GemTile tile = GetTile(coords[i]);
+
+        if (tile == null)
+        {
+            continue;
+        }
+
+        pops.Add(tile.PopAsync(duration));
+        releaseCoords.Add(coords[i]);
+    }
+
+    await Task.WhenAll(pops);
+
+    for (int i = 0; i < releaseCoords.Count; i++)
+    {
+        ReleaseGemTile(releaseCoords[i]);
+    }
+}
+```
+
+在它後面新增引爆版清除：
+
+```csharp
+public async Task AnimateDetonationAsync(
+    IReadOnlyList<CellCoord> coords,
+    float duration)
+{
+    List<Task> pops = new List<Task>();
+    List<CellCoord> releaseCoords = new List<CellCoord>();
+
+    for (int i = 0; i < coords.Count; i++)
+    {
+        GemTile tile = GetTile(coords[i]);
+
+        if (tile == null)
+        {
+            continue;
+        }
+
+        pops.Add(tile.DetonationPopAsync(duration));
+        releaseCoords.Add(coords[i]);
+    }
+
+    await Task.WhenAll(pops);
+
+    for (int i = 0; i < releaseCoords.Count; i++)
+    {
+        ReleaseGemTile(releaseCoords[i]);
+    }
+}
+```
+
+完整取代舊的 `ReleaseeGemTile`：
+
+```csharp
+private void ReleaseGemTile(CellCoord coord)
+{
+    GemTile tile = GetTile(coord);
+
+    if (tile == null)
+    {
+        return;
+    }
+
+    _tilePool.Release(tile);
+    _tiles[coord.X, coord.Y] = null;
+}
+```
+
+#### ⑨-c `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：引爆拍改走專用 View API）
+
+- **精確落點**：完整取代並更名 `RunDetonactionAsync`。
+- **誰呼叫**：`TrySwap` 在普通配對動畫之後、重力之前 `await RunDetonationAsync(chain)`。
+
+```csharp
+private async Task RunDetonationAsync(DetonationChain chain)
+{
+    while (chain.HasFuses)
+    {
+        ClearStepResult result =
+            _boardFlowController.DetonationStep(chain);
+
+        if (result.ClearedCoords.Count == 0)
+        {
+            continue;
+        }
+
+        await _boardView.AnimateDetonationAsync(
+            result.ClearedCoords,
+            _clearAnimationDuration);
+    }
+}
+```
+
+最後把 `TrySwap` 裡的舊呼叫：
+
+```csharp
+await RunDetonactionAsync(chain);
+```
+
+改成：
+
+```csharp
+await RunDetonationAsync(chain);
+```
+
+> ⑨-a～⑨-c 是一個 atomic step：`GemTile`、`BoardView`、Controller 三處全部接完才編譯，否則會暫時出現找不到新方法的 `CS1061`。
+
+完整演出順序現在是：
 
 1. 普通配對縮小消失。
 2. 特殊石位置短暫閃光或蓄力。
@@ -450,7 +988,14 @@ await _boardView.AnimateSpecialActivationAsync(
 4. 掃光經過的剩餘寶石再 Pop。
 5. 若掃到另一顆特殊石，再進下一層引爆拍。
 
-`AnimateSpecialActivationAsync` 是建議的新 API，目前 Repo 尚未實作；現場若只做資料修正，可先以不同顏色的 Debug Line 或 Log 表示方向，不要把未完成的演出說成已經存在。
+這個最小版本只做到「引爆拍變白」，尚未畫真正的橫向／直向掃光。若現場沒有實作掃光，講稿與驗收只能宣稱「普通拍和能力拍可辨識」，不能宣稱方向特效已完成。
+
+**立即驗證**
+
+- 普通三消只播放原色縮小。
+- 任何特殊石引爆時，第二拍先轉白再縮小。
+- 在 `await Task.WhenAll` 前檢查 Pool，正在 Pop 的 Tile 不應已經排入可重用 Queue。
+- 同方向直線石仍是兩拍，但第二拍不再像第二次普通三消。
 
 ### 固定盤面回歸表
 
@@ -479,22 +1024,107 @@ await _boardView.AnimateSpecialActivationAsync(
 
 目前交換入口是非同步流程。若任一 View 動畫丟出例外，`SetIdle()` 可能永遠走不到，輸入會一直被 Busy 狀態擋住。
 
-修正原則是把整個交換流程包在 `try/finally`：
+### ⑫ `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：完整取代 `TrySwap`）
+
+- **精確落點**：完整取代目前的 `TrySwap(CellCoord from, CellCoord to)`；方法內的 `RunDetonactionAsync` 呼叫同步改成前一節建立的 `RunDetonationAsync`。
+- **誰呼叫**：`ConfigureInput` 透過 `_boardInput.SwapAction = TrySwap` 接線。
+- **原理**：只要 `TrySwap` 已成功把 State 改成 Swapping，後面所有 await 都必須由 `finally` 保證回到 Idle。無效交換與正常 combo 不再各自負責收尾。
 
 ```csharp
-try
+private async void TrySwap(CellCoord from, CellCoord to)
 {
-    await RunSwapAndCascadeAsync(from, to);
-}
-finally
-{
-    _boardFlowController.SetIdle();
+    if (!_boardFlowController.TrySwap(_boardModel, from, to))
+    {
+        return;
+    }
+
+    try
+    {
+        await _boardView.AnimateSwapAsync(
+            from,
+            to,
+            _swapAnimationDuration);
+
+        MatchResult result =
+            _boardFlowController.FindMatches(_boardModel);
+
+        if (!result.HasMatch)
+        {
+            _boardModel.SwapGems(from, to);
+            await _boardView.AnimateSwapAsync(
+                from,
+                to,
+                _swapAnimationDuration);
+            return;
+        }
+
+        int comboCount = 0;
+        _moveCells.Clear();
+        _moveCells.Add(from);
+        _moveCells.Add(to);
+
+        while (result.HasMatch)
+        {
+            SpecialGemSpawnInfo spawnInfo =
+                _boardFlowController.CreateSpawn(result, _moveCells);
+
+            ClearStepResult clearStepResult =
+                _boardFlowController.ClearStep(
+                    _boardModel,
+                    result,
+                    spawnInfo,
+                    out DetonationChain chain);
+
+            comboCount++;
+
+            await _boardView.AnimateClearAsync(
+                clearStepResult.ClearedCoords,
+                _clearAnimationDuration);
+
+            if (spawnInfo.HasSpecialGem)
+            {
+                _boardView.RefreshGem(
+                    _boardModel,
+                    spawnInfo.SpawnCoord);
+            }
+
+            await RunDetonationAsync(chain);
+
+            List<TileMove> falls =
+                _boardFlowController.ApplyGravity(_boardModel);
+            await _boardView.AnimateFallAsync(
+                _boardModel,
+                falls,
+                _buildAnimationDuration);
+
+            List<TileMove> fills =
+                _boardFlowController.ApplyFill(_boardModel);
+            await _boardView.AnimateFillAsync(
+                _boardModel,
+                fills,
+                _buildAnimationDuration);
+
+            result = _boardFlowController.FindMatches(_boardModel);
+        }
+    }
+    finally
+    {
+        _boardFlowController.SetIdle();
+    }
 }
 ```
 
 真正的 Unity 事件入口可以是 `async void`；拆出的內部流程必須回傳 `Task`，呼叫端才等得到，也才能測試與捕捉例外。
 
-另外，`DetonactionStep`／`RunDetonactionAsync` 拼字應統一為 `DetonationStep`／`RunDetonationAsync`。這不是執行 Bug，但搜尋、講解與未來 API 使用都會被錯字持續污染；改名時必須一次更新宣告、呼叫端與文件，避免半套更名造成編譯錯誤。
+`comboCount` 目前只累加、尚未被其他系統使用；補充課保留它是為了不改變現場進度。若這個 Repo 不準備接計分，後續可另做清理，不要混在本次 Bug 修正裡。
+
+**立即驗證**
+
+- 無效交換回彈後 State 是 Idle。
+- 正常 combo 全部落補後 State 是 Idle。
+- 在任一動畫方法暫時 `throw new System.Exception("測試")`；Console 會收到例外，但下一次檢查 State 仍是 Idle。測完立刻移除故意丟錯。
+
+前面的 ⑥ 與 ⑨-c 已經把 `DetonactionStep`／`RunDetonactionAsync` 統一改成 `DetonationStep`／`RunDetonationAsync`。這不是執行 Bug，但搜尋、講解與未來 API 使用都會被錯字持續污染；兩處必須同一個 atomic step 一起完成，避免半套更名造成編譯錯誤。
 
 ## 現場驗收紀錄模板
 
