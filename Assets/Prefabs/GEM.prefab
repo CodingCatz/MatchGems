@@ -105,4 +105,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MatchGems.View.GemTile
   _gemSprite: {fileID: 21300000, guid: 835c5ef09e38b75499cbe1045c9397ea, type: 3}
+  _lineSprite: {fileID: 21300000, guid: e8ad135109721b1419cc8ac09c4d4189, type: 3}
+  _bombSprite: {fileID: 21300000, guid: 1020b7f5e951f894685966fd5825dd89, type: 3}
+  _rainbowSprite: {fileID: 21300000, guid: 4d131121c5883d645a26cadd6ee7cf38, type: 3}
   _tileScale: 1

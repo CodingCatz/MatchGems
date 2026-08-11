@@ -164,8 +164,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4df699b711aeac1478583a8961bf791a, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MatchGems.View.BoardView
-  _cellSize: 64
-  _pixelPerUnit: 64
+  _cellSize: 512
+  _pixelPerUnit: 512
   _tilePrefab: {fileID: 7153970135445356297, guid: be2a5dc24a12fdf438e60041244b5724, type: 3}
 --- !u!114 &81215929
 MonoBehaviour:

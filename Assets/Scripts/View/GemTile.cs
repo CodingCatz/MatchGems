@@ -1,6 +1,7 @@
 ﻿using UnityEngine;
 using MatchGems.Core;
-using System.Threading.Tasks;//導入核心資料
+using System.Threading.Tasks;
+using System;//導入核心資料
 
 namespace MatchGems.View
 {
@@ -16,6 +17,12 @@ namespace MatchGems.View
         /// </summary>
         [SerializeField]
         private Sprite _gemSprite;
+        [SerializeField]
+        private Sprite _lineSprite;
+        [SerializeField]
+        private Sprite _bombSprite;
+        [SerializeField]
+        private Sprite _rainbowSprite;
         private float _cellWorldSize;
         [SerializeField] 
         private float _tileScale = 1f;
@@ -49,9 +56,7 @@ namespace MatchGems.View
         /// <param name="gemData">寶石資料</param>
         public void SetGem(GemData gemData)
         {
-            SpriteRenderer.sprite = GetDisplaySprite();
-            SpriteRenderer.color = GetColor(gemData);
-            ApplyVisualScale();
+            ApplyAppearance(gemData);
         }
 
         /// <summary>
@@ -60,9 +65,9 @@ namespace MatchGems.View
         /// <param name="pos"></param>
         public void ResetGem(Vector3 pos, GemData gemData)
         {
-            SpriteRenderer.color = GetColor(gemData.Color);
+            //SpriteRenderer.color = GetColor(gemData.Color);
             transform.position = pos;
-            ApplyVisualScale();
+            ApplyAppearance(gemData);
         }
 
         /// <summary>
@@ -133,6 +138,31 @@ namespace MatchGems.View
         {
             return _gemSprite != null ? _gemSprite : GetDefaultSprite();
         }
+        /// <summary>
+        /// 取得視覺圖片效果(含特殊石)
+        /// </summary>
+        /// <param name="gemData"></param>
+        /// <returns></returns>
+        private Sprite GetDisplaySprite(GemData gemData)
+        {
+            Sprite normalSprite = GetDisplaySprite();
+
+            switch (gemData.Power)
+            {
+                case GemPower.HLine:
+                case GemPower.VLine:
+                    return _lineSprite != null ? _lineSprite : normalSprite;
+
+                case GemPower.Bomb:
+                    return _bombSprite != null ? _bombSprite : normalSprite;
+
+                case GemPower.Rainbow:
+                    return _rainbowSprite != null ? _rainbowSprite : normalSprite;
+
+                default:
+                    return normalSprite;
+            }
+        }
 
         /// <summary>
         /// 取得預設Sprite圖片(白色)
@@ -191,6 +221,43 @@ namespace MatchGems.View
                 default:
                     return GetColor(gemData.Color);
             }
+        }
+
+        /// <summary>
+        /// 外觀設置總入口
+        /// </summary>
+        /// <param name="gemData"></param>
+        private void ApplyAppearance(GemData gemData)
+        {
+            SpriteRenderer.sprite = GetDisplaySprite(gemData);
+            SpriteRenderer.color = GetDisplayColor(gemData);
+            transform.localRotation = GetDisplayRotation(gemData);
+            ApplyVisualScale();
+        }
+        /// <summary>
+        /// 依照軸向轉動LINE圖方向
+        /// </summary>
+        /// <param name="gemData"></param>
+        /// <returns></returns>
+        private Quaternion GetDisplayRotation(GemData gemData)
+        {
+            return gemData.Power == GemPower.VLine ?
+                Quaternion.Euler(0, 0, 90f) : Quaternion.identity;
+        }
+
+        /// <summary>
+        /// 使用灰階圖染色(彩虹POWER不染)
+        /// </summary>
+        /// <param name="gemData"></param>
+        /// <returns></returns>
+        private Color GetDisplayColor(GemData gemData)
+        {
+            /*if (gemData.Power == GemPower.Rainbow)
+            {//彩虹特殊處理：不染色
+                return Color.white;
+            }*/
+            //否則走一般取色套路
+            return GetColor(gemData.Color);
         }
 
         /// <summary>
