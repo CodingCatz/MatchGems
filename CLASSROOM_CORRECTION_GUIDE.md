@@ -43,19 +43,19 @@
 - **改既有**：`GridMapper`、`BoardInput`、`FillService`、`BoardFlowController`、`MatchFinder`。
 - **改既有**：`GemTile`、`BoardView`、`MatchGemsGameController`。
 - **不新增 Runtime 類別**：避免除錯課同時擴大架構範圍。
-- **新增的只有方法**：`FillInitial`、特殊線比較方法、`DetonationPopAsync`、`AnimateDetonationAsync`。
+- **新增的只有方法**：`ApplyAppearance` 與三個外觀選擇方法、`FillInitial`、特殊線比較方法、`DetonationPopAsync`、`AnimateDetonationAsync`。
 
 ### 本次實作順序
 
 以下編號就是學員動手順序，不是問題嚴重度排序：
 
-1. `GemTile → BoardView → GridMapper.ToCell`：先換實體圖並建立非 1 格尺寸，再讓 Cell 座標可信。
+1. `GemTile → BoardView → GridMapper.ToCell`：先換實體圖、讓特殊石共用外觀入口並建立非 1 格尺寸，再讓 Cell 座標可信。
 2. `BoardInput`：統一像素門檻並修正第二次點擊目標。
 3. `BoardFlowController.TrySwap`：所有陣列操作前封住界外座標。
 4. `FillService → BoardFlowController → GameController`：atomic 加入無既有三消初盤。
 5. `BoardFlowController.ClearStep / DetonationStep`：清除前留下顏色快照。
 6. `MatchFinder.ScanLine`：允許掃描暫時有洞的棋盤。
-7. `GemTile.ResetGem`：Pool 重用時套用完整 GemData。
+7. `GemTile.ResetGem`：Pool 重用時也走同一條完整外觀流程。
 8. `TryFindBombSpawn + TryGetIntersection`：atomic 阻止假交叉炸彈。
 9. `CreateSpecialGemSpawn + FindBestSpecialLine`：實作五連／T-L／四連優先序。
 10. `GemTile → BoardView → GameController`：atomic 接上可辨識的引爆拍並修正回收時機。
@@ -207,6 +207,144 @@ tile.ConfigureCellSize(CellWorldSize);
 - 暫時清空 `Gem Sprite`：仍能退回程式產生的白方塊，不出現 NullReference。
 - 使用不同解析度與 PPU 的寶石圖：圖片仍占 Cell 的約 90%，不改變棋盤座標。
 - 消除再補珠：Pool 取出的新珠尺寸與初盤一致。
+
+#### ①-a-2 `GemTile`（改既有 Function：普通圖無痛轉成特殊石圖）
+
+第一步只有一張中性寶石圖，顏色和特殊狀態仍靠 Tint 表現。若現場已準備普通、直線、炸彈、彩虹四種圖，不需要改 `GemData`、`GemFactory`、`BoardModel`、`BoardFlowController` 或 Controller；資料層已經用 `GemPower` 說清楚「它是什麼」，只要讓 View 的單一入口決定「它看起來像什麼」。
+
+```mermaid
+flowchart LR
+    F["GemFactory<br/>建立 GemData.Power"] --> M["BoardModel<br/>保存 GemData"]
+    M --> R["BoardView.RefreshGem<br/>沿用既有接線"]
+    R --> S["GemTile.SetGem"]
+    S --> A["ApplyAppearance<br/>換 Sprite、Tint、方向"]
+```
+
+**為什麼這叫無痛轉移**
+
+- 普通色、橫線、直線、炸彈、彩虹仍由既有 `GemData.Color + GemData.Power` 表示。
+- `ApplySpecialSpawn` 仍只改 Model；`RefreshGem` 仍只呼叫 `SetGem`。
+- 只收斂 `GemTile` 內部 Function，不增加第二條特殊石更新路徑。
+- 特殊圖使用白色／灰階模板，再由 `GemType` Tint 上色；六色不必乘上四種 Power 做成 24 張圖。
+
+**素材與 Inspector 欄位**
+
+準備四張同尺寸、相同 Pivot 的中性 Sprite：
+
+| 欄位 | 圖片內容 | 備註 |
+|---|---|---|
+| `Gem Sprite` | 普通寶石 | ①-a 已建立 |
+| `Line Sprite` | 水平條紋寶石 | 直向沿用同圖旋轉 90° |
+| `Bomb Sprite` | 炸彈／爆裂紋寶石 | 仍用原 GemType 上色 |
+| `Rainbow Sprite` | 彩虹特殊圖 | 可保持白色或使用自身彩色圖 |
+
+`Assets/Scripts/View/GemTile.cs`：接在 `_gemSprite` 後新增三個欄位。
+
+```csharp
+[SerializeField]
+private Sprite _lineSprite;
+
+[SerializeField]
+private Sprite _bombSprite;
+
+[SerializeField]
+private Sprite _rainbowSprite;
+```
+
+完整取代 ①-a 剛寫的 `SetGem`，讓所有外觀更新只走一支 Function：
+
+```csharp
+public void SetGem(GemData gemData)
+{
+    ApplyAppearance(gemData);
+}
+```
+
+在 `#region 私有功能` 加入外觀總入口：
+
+```csharp
+private void ApplyAppearance(GemData gemData)
+{
+    SpriteRenderer.sprite = GetDisplaySprite(gemData);
+    SpriteRenderer.color = GetDisplayTint(gemData);
+    transform.localRotation = GetDisplayRotation(gemData);
+    ApplyVisualScale();
+}
+```
+
+接著用三個小 Function 各自回答「哪張圖、什麼顏色、什麼方向」。它們只負責 View，不改任何遊戲規則：
+
+```csharp
+private Sprite GetDisplaySprite(GemData gemData)
+{
+    Sprite normalSprite =
+        _gemSprite != null ? _gemSprite : GetDefaultSprite();
+
+    switch (gemData.Power)
+    {
+        case GemPower.HLine:
+        case GemPower.VLine:
+            return _lineSprite != null ? _lineSprite : normalSprite;
+
+        case GemPower.Bomb:
+            return _bombSprite != null ? _bombSprite : normalSprite;
+
+        case GemPower.Rainbow:
+            return _rainbowSprite != null ? _rainbowSprite : normalSprite;
+
+        default:
+            return normalSprite;
+    }
+}
+
+private Color GetDisplayTint(GemData gemData)
+{
+    // Rainbow 圖若自帶彩色，必須用白色 Tint 才不會把原圖乘暗。
+    if (gemData.Power == GemPower.Rainbow)
+    {
+        return Color.white;
+    }
+
+    return GetColor(gemData.Color);
+}
+
+private Quaternion GetDisplayRotation(GemData gemData)
+{
+    return gemData.Power == GemPower.VLine
+        ? Quaternion.Euler(0f, 0f, 90f)
+        : Quaternion.identity;
+}
+```
+
+刪除舊的 `GetColor(GemData gemData)`。它原本用變亮程度區分 Line／Bomb；現在 Power 已由圖案形狀表達，只保留既有的 `GetColor(GemType gemType)` 做六色 Tint，避免同一個 Power 同時由兩套 Function 決定外觀。
+
+最後修改 `ApplyVisualScale` 的 Sprite 來源。把：
+
+```csharp
+Sprite sprite = GetDisplaySprite();
+```
+
+改成：
+
+```csharp
+Sprite sprite = SpriteRenderer.sprite != null
+    ? SpriteRenderer.sprite
+    : (_gemSprite != null ? _gemSprite : GetDefaultSprite());
+```
+
+舊的無參數 `GetDisplaySprite()` 可以刪除；有參數版本已依 `GemData.Power` 選好 Sprite，再交給 `ApplyVisualScale` 讀目前 Renderer 上的正式結果。
+
+> `Rainbow Sprite` 若也是白／灰階模板，可以把 `GetDisplayTint` 的 Rainbow 特判移除，讓它跟著 GemType 上色；本稿採「彩虹圖保留自身色彩」，所以回傳 `Color.white`。兩種都能用，但只能選一個規則，不能 Inspector 有時放彩色、有時放白圖卻期待同一段 Tint 自動猜中。
+
+**特殊圖轉換立即驗證**
+
+- `Normal`：顯示普通 Sprite，使用 GemType 色票。
+- `HLine`：顯示 Line Sprite，角度 0°。
+- `VLine`：沿用同一張 Line Sprite，角度 90°。
+- `Bomb`：顯示 Bomb Sprite，仍使用原 GemType 色票。
+- `Rainbow`：顯示 Rainbow Sprite，Tint 為白色，不把素材自身顏色乘暗。
+- 把任一特殊 Sprite 欄位清空：退回普通 Sprite，程式不中斷。
+- 呼叫既有 `BoardView.RefreshGem`：同一顆 Tile 必須原地從普通圖換成特殊圖，不建立新 Tile、不改 Pool 索引。
 
 #### ①-b 用實體圖建立 `CellWorldSize != 1` 的除錯情境
 
@@ -637,9 +775,9 @@ if (!board.HasGem(start))
 
 **立即驗證**：清空 `(2,2)` 後直接呼叫 `FindMatches`；沒有 NullReference，兩個方向的掃描都能越過空格並結束。
 
-### 防禦修正：Pool 重設要使用完整 `GemData`
+### 防禦修正：Pool 重設要使用同一條外觀流程
 
-`GemTile.SetGem` 使用 `GetColor(gemData)`，但 `ResetGem` 卻使用 `GetColor(gemData.Color)`。特殊石經過 Pool 重用時，Power 的外觀資訊會被忽略。
+換圖以前，`SetGem` 與 `ResetGem` 分別呼叫不同的改色程式，已可能漏掉 Power；換成實體圖片後，如果 Pool 又自行指定 Sprite、Tint 或角度，同一顆特殊石還會在重用時變回普通圖。兩個入口都應收斂到 ①-a-2 的 `ApplyAppearance(gemData)`。
 
 #### ⑪ `Assets/Scripts/View/GemTile.cs`（改既有：完整取代 `ResetGem`）
 
@@ -650,16 +788,14 @@ if (!board.HasGem(start))
 ```csharp
 public void ResetGem(Vector3 pos, GemData gemData)
 {
-    SpriteRenderer.sprite = GetDisplaySprite();
-    SpriteRenderer.color = GetColor(gemData);
     transform.position = pos;
-    ApplyVisualScale();
+    ApplyAppearance(gemData);
 }
 ```
 
-這裡的 `GetDisplaySprite` 與 `ApplyVisualScale` 來自 ①-a；因此第 ⑪ 步不是另寫一套圖片流程，而是讓 Pool 重設也走同一條既有責任線。
+這裡不再個別呼叫 `GetDisplaySprite`、`GetDisplayTint`、`GetDisplayRotation` 或 `ApplyVisualScale`。`SetGem` 與 `ResetGem` 都只把完整 `GemData` 交給同一個外觀 Function；將來換第五種特殊圖時只改 `ApplyAppearance` 內部使用的小函式，不必改 Pool、BoardView 或 Controller。
 
-**立即驗證**：同一個 Tile 先顯示普通紅石，Release 後用紅色 Bomb 資料 Get；顏色必須是 Bomb 變體，實體 Sprite 與 Cell 比例也必須保持不變。
+**立即驗證**：同一個 Tile 先顯示普通紅石，Release 後用紅色 Bomb 資料 Get；它必須換成 Bomb Sprite、保留紅色 Tint、角度歸零，實體 Sprite 與 Cell 比例也保持不變。再用藍色 VLine 資料 Get，必須換成 Line Sprite、藍色 Tint 並旋轉 90°。
 
 ### 第二段完成檢查
 
@@ -667,7 +803,7 @@ public void ResetGem(Vector3 pos, GemData gemData)
 - [ ] 消除後補珠仍可能產生天降配對。
 - [ ] 清除資料已是空格時，`ClearStepResult` 仍保存清除前顏色。
 - [ ] 在有洞棋盤呼叫 `FindMatches` 不會 NullReference，也不會卡迴圈。
-- [ ] 特殊石經 Pool Release → Get → Reset 後仍保持特殊色。
+- [ ] 特殊石經 Pool Release → Get → Reset 後仍保持正確 Sprite、Tint、方向與尺寸。
 
 ---
 
@@ -999,7 +1135,7 @@ public async Task DetonationPopAsync(float duration)
 
     await PopAsync(duration);
 
-    // Pool 下次 Get 前先還原；ResetGem 仍會再依 GemData 套正式顏色。
+    // Pool 下次 Get 前先還原；ResetGem 仍會再依 GemData 套正式外觀。
     SpriteRenderer.color = originalColor;
 }
 ```
