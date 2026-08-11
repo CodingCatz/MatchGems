@@ -103,6 +103,7 @@ namespace MatchGems.View
             {//新珠的掉落
                 Vector3 target = _gridMapper.ToWorld(fill.To);//落點
                 GemTile tile = _tilePool.Get(SpawnAbove(board, fill.From), board.GetGem(fill.From));//算出頂點和置入新資料
+                tile.ConfigureCellSize(CellWorldSize);//重套設定的尺寸比
                 _tiles[fill.To.X, fill.To.Y] = tile;//紀錄最終位子
                 tasks.Add(tile.MoveToAsync(target, duration));
             }
@@ -211,7 +212,9 @@ namespace MatchGems.View
         /// <returns>寶石磚</returns>
         private GemTile CreateTileAt(Vector3 pos)
         {
-            return Instantiate(_tilePrefab, pos, Quaternion.identity, transform);
+            GemTile tile = Instantiate(_tilePrefab, pos, Quaternion.identity, transform);
+            tile.ConfigureCellSize(CellWorldSize);//套用設定的尺寸比
+            return tile;
         }
 
         /// <summary>
