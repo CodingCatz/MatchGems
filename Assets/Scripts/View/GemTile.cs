@@ -11,8 +11,14 @@ namespace MatchGems.View
     public class GemTile : MonoBehaviour
     {
         #region 基本參數
+        /// <summary>
+        /// 視覺美術圖放置欄位
+        /// </summary>
+        [SerializeField]
+        private Sprite _gemSprite;
+        private float _cellWorldSize;
         [SerializeField] 
-        private float _tileScale = 0.9f;
+        private float _tileScale = 1f;
         private SpriteRenderer _spriteRenderer;
         /// <summary>
         /// 視覺渲染延遲讀取
@@ -27,14 +33,25 @@ namespace MatchGems.View
 
         #region 公開功能
         /// <summary>
+        /// 配置Cell尺寸
+        /// </summary>
+        /// <param name="cellWorldSize">實際尺寸</param>
+        public void ConfigureCellSize(float cellWorldSize)
+        {
+            //防止設定過小(甚至是負的)
+            _cellWorldSize = Mathf.Max(0.1f, cellWorldSize);
+            ApplyVisualScale();
+        }
+
+        /// <summary>
         /// 設定寶石資料並更新視覺
         /// </summary>
         /// <param name="gemData">寶石資料</param>
         public void SetGem(GemData gemData)
         {
-            SpriteRenderer.sprite = GetDefaultSprite();
+            SpriteRenderer.sprite = GetDisplaySprite();
             SpriteRenderer.color = GetColor(gemData);
-            transform.localScale = Vector3.one * _tileScale;
+            ApplyVisualScale();
         }
 
         /// <summary>
@@ -45,7 +62,7 @@ namespace MatchGems.View
         {
             SpriteRenderer.color = GetColor(gemData.Color);
             transform.position = pos;
-            transform.localScale = Vector3.one * _tileScale;
+            ApplyVisualScale();
         }
 
         /// <summary>
@@ -109,6 +126,15 @@ namespace MatchGems.View
 
         #region 私有功能
         /// <summary>
+        /// 取得視覺圖片效果
+        /// </summary>
+        /// <returns>有圖/預設色塊</returns>
+        private Sprite GetDisplaySprite()
+        {
+            return _gemSprite != null ? _gemSprite : GetDefaultSprite();
+        }
+
+        /// <summary>
         /// 取得預設Sprite圖片(白色)
         /// </summary>
         /// <returns>Sprite圖片</returns>
@@ -165,6 +191,19 @@ namespace MatchGems.View
                 default:
                     return GetColor(gemData.Color);
             }
+        }
+
+        /// <summary>
+        /// 套用視覺變換
+        /// </summary>
+        private void ApplyVisualScale()
+        {
+            Sprite sprite = GetDisplaySprite();
+            float soureSize = Mathf.Max(sprite.bounds.size.x, sprite.bounds.size.y);
+            if (soureSize <= 0f) return;
+            float targetSize = _cellWorldSize * _tileScale;
+            float scale = targetSize / soureSize;
+            transform.localScale = Vector3.one * scale;
         }
         #endregion 私有功能
     }

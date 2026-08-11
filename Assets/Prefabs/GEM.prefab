@@ -104,4 +104,5 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4cff8bd0119608b40bf7ef251e35feef, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MatchGems.View.GemTile
-  _tileScale: 0.9
+  _gemSprite: {fileID: 0}
+  _tileScale: 1
