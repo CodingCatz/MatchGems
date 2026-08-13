@@ -3,7 +3,7 @@
 > 文件定位：本文件只服務 `CodingCatz/MatchGems` 現場教學 Repo 的除錯與補課。  
 > 它不是原課程教材、不是 Lesson 01–20 的替代品，也不要求其他課程跟著同步。  
 > 比對基準：`main` commit `774f1266e6ba39b7dda051cfbec83c7383735d7f`。  
-> 驗證狀態：程式問題已完成靜態定位；Unity `6000.4.7f1` 的編譯與 Play Mode 行為仍待現場實機驗證。
+> 驗證狀態：程式問題已完成靜態定位；本文 6 張 Mermaid 圖已實際渲染通過。Unity `6000.4.7f1` 的編譯與 Play Mode 行為仍待現場實機驗證。
 
 ## 這份補充課怎麼使用
 
@@ -29,10 +29,11 @@
 | 6 | P1 | 清除後才讀取顏色 | `ClearedGemTypes` 永遠拿不到已清除寶石 | `BoardFlowController.cs` |
 | 7 | P1 | 炸彈沒有驗證兩線真的相交 | 分離的橫線與直線也可能生出炸彈 | `BoardFlowController.cs` |
 | 8 | P1 | 特殊線選擇被後面的短線覆蓋 | 五連可能輸給四連，與註解優先序不同 | `BoardFlowController.cs` |
-| 9 | P2 | 同方向直線石看起來分兩次消除 | 先消短線，再消同一排／列剩餘寶石 | Controller／View 時序 |
-| 10 | P2 | 有洞時 `MatchFinder` 直接讀起點顏色 | 若在未補滿的棋盤掃描，可能讀到空格 | `MatchFinder.cs` |
-| 11 | P2 | Pool 重設時只套用普通色 | 特殊石經物件池重用後可能失去特殊外觀 | `GemTile.cs` |
-| 12 | P2 | 非同步流程沒有 `try/finally` 保底 | 動畫丟例外後可能永遠維持 Busy | `MatchGemsGameController.cs` |
+| 9 | P1 | 一拍只能保存一筆特殊石生成結果 | 一次交換同時形成兩組四連，盤面只留下其中一顆 | Flow／Chain／Controller |
+| 10 | P2 | 同方向直線石看起來分兩次消除 | 先消短線，再消同一排／列剩餘寶石 | Controller／View 時序 |
+| 11 | P2 | 有洞時 `MatchFinder` 直接讀起點顏色 | 若在未補滿的棋盤掃描，可能讀到空格 | `MatchFinder.cs` |
+| 12 | P2 | Pool 重設時只套用普通色 | 特殊石經物件池重用後可能失去特殊外觀 | `GemTile.cs` |
+| 13 | P2 | 非同步流程沒有 `try/finally` 保底 | 動畫丟例外後可能永遠維持 Busy | `MatchGemsGameController.cs` |
 
 ## 階段性程式碼
 
@@ -42,8 +43,8 @@
 
 - **改既有**：`GridMapper`、`BoardInput`、`FillService`、`BoardFlowController`、`MatchFinder`。
 - **改既有**：`GemTile`、`BoardView`、`MatchGemsGameController`。
-- **不新增 Runtime 類別**：避免除錯課同時擴大架構範圍。
-- **新增的只有方法**：`ApplyAppearance` 與三個外觀選擇方法、`FillInitial`、特殊線比較方法、`DetonationPopAsync`、`AnimateDetonationAsync`。
+- **新增一個 Runtime 類別**：`SpecialGemSpawnPlan`，專門保存同一拍 0～N 筆生成結果；單筆 `SpecialGemSpawnInfo` 繼續保留。
+- **其餘新增方法**：`ApplyAppearance` 與三個外觀選擇方法、`FillInitial`、特殊線比較／分群方法、`DetonationPopAsync`、`AnimateDetonationAsync`。
 
 ### 本次實作順序
 
@@ -58,9 +59,10 @@
 7. `GemTile.ResetGem`：Pool 重用時也走同一條完整外觀流程。
 8. `TryFindBombSpawn + TryGetIntersection`：atomic 阻止假交叉炸彈。
 9. `CreateSpecialGemSpawn + FindBestSpecialLine`：實作五連／T-L／四連優先序。
-10. `GemTile → BoardView → GameController`：atomic 接上可辨識的引爆拍並修正回收時機。
-11. `MatchGemsGameController.TrySwap`：最後用 `try/finally` 收住整條非同步流程。
-12. 依固定盤面回歸表重跑；前一步沒過，不進下一步。
+10. `SpecialGemSpawnPlan → Flow → Chain → Controller`：atomic 讓每個獨立配對群組各自生成一顆。
+11. `GemTile → BoardView → GameController`：atomic 接上可辨識的引爆拍並修正回收時機。
+12. `MatchGemsGameController.TrySwap`：最後用 `try/finally` 收住整條非同步流程。
+13. 依固定盤面回歸表重跑；前一步沒過，不進下一步。
 
 每一步下面都會再次寫明落點、取代範圍、呼叫端、原理、程式碼與立即驗證。標為 atomic 的步驟必須一次完成整組檔案，不能在中間狀態按 Play。
 
@@ -223,7 +225,7 @@ flowchart LR
 **為什麼這叫無痛轉移**
 
 - 普通色、橫線、直線、炸彈、彩虹仍由既有 `GemData.Color + GemData.Power` 表示。
-- `ApplySpecialSpawn` 仍只改 Model；`RefreshGem` 仍只呼叫 `SetGem`。
+- 此階段的單筆 `ApplySpecialSpawn` 仍只改 Model；`RefreshGem` 仍只呼叫 `SetGem`。第三段修正 9 會把前者正式擴充成多筆 `ApplySpecialSpawns`，View 邊界不變。
 - 只收斂 `GemTile` 內部 Function，不增加第二條特殊石更新路徑。
 - 特殊圖使用白色／灰階模板，再由 `GemType` Tint 上色；六色不必乘上四種 Power 做成 24 張圖。
 
@@ -759,7 +761,7 @@ private static void ClearCoords(
 
 `MatchFinder.ScanLine` 第一行直接呼叫 `board.GetGemColor(start)`。目前主流程通常在補滿後才掃描，所以不一定立即觸發；但方法契約沒有保證永遠滿盤。
 
-#### ⑩ `Assets/Scripts/Core/MatchFinder.cs`（改既有：讀顏色前先處理空格）
+#### ⑪ `Assets/Scripts/Core/MatchFinder.cs`（改既有：讀顏色前先處理空格）
 
 - **精確落點**：在 `ScanLine` 方法開頭、`GemType color = board.GetGemColor(start);` 之前插入。
 - **誰呼叫**：`FindHorizontal` 與 `FindVertical`。
@@ -779,7 +781,7 @@ if (!board.HasGem(start))
 
 換圖以前，`SetGem` 與 `ResetGem` 分別呼叫不同的改色程式，已可能漏掉 Power；換成實體圖片後，如果 Pool 又自行指定 Sprite、Tint 或角度，同一顆特殊石還會在重用時變回普通圖。兩個入口都應收斂到 ①-a-2 的 `ApplyAppearance(gemData)`。
 
-#### ⑪ `Assets/Scripts/View/GemTile.cs`（改既有：完整取代 `ResetGem`）
+#### ⑫ `Assets/Scripts/View/GemTile.cs`（改既有：完整取代 `ResetGem`）
 
 - **精確落點**：完整取代目前的 `ResetGem(Vector3 pos, GemData gemData)`。
 - **誰呼叫**：`GemTilePool.Get` 每次取出舊 Tile 時呼叫。
@@ -1079,6 +1081,477 @@ private int GetSpecialLineRank(MatchLine line)
 
 不要在找到第一條或最後一條時直接決定，應使用 `FindBestSpecialLine`／`IsBetterSpecialLine` 這類具名比較方法，讓優先規則可以單獨測試。
 
+### 修正 9：一拍要保存每個獨立配對群組的生成結果
+
+**目前症狀**
+
+一次交換可能讓上下兩列同時形成四連，但 `CreateSpawn` 的回傳型別只有一個 `SpecialGemSpawnInfo`。程式即使掃到兩條合格線，最後仍只能交出一筆；後面的 `RemoveSpawnCoord`、`ApplySpecialSpawn`、`DetonationChain` 與 Controller 也全部只處理一格，因此第二顆在資料入口就已消失，不是單純漏掉 `RefreshGem`。
+
+這裡要先分清楚兩種形狀：
+
+- **共享任一座標的線**屬於同一群。T／L 的橫線與直線共享交點，所以群內依「彩虹 > 炸彈 > 直線」只選一顆。
+- **完全不共享座標的線**屬於不同群。一次交換同時完成上下兩個四連時，兩群應各生一顆。
+
+```mermaid
+flowchart LR
+    M["MatchResult.Line"] --> G["依共享座標分群"]
+    G --> A["群組 A<br/>群內選一顆"]
+    G --> B["群組 B<br/>群內選一顆"]
+    A --> P["SpecialGemSpawnPlan<br/>本拍 0～N 筆"]
+    B --> P
+    P --> K["保留全部生成格"]
+    P --> W["寫回全部 GemData"]
+    P --> R["逐格 RefreshGem"]
+```
+
+> ⑨-a～⑨-e 是同一個 atomic step。只改回傳型別會連續出現編譯錯誤；只改 Flow、不改 Chain 與 Controller，則會得到「Plan 算到兩顆，盤面或畫面只完成一顆」的半套結果。
+
+#### ⑨-a `Assets/Scripts/Core/SpecialGemSpawnPlan.cs`（新增：本拍 0～N 筆生成計畫）
+
+- **精確落點**：在 `Assets/Scripts/Core/` 新增整個檔案。
+- **誰建立**：`BoardFlowController.CreateSpecialGemSpawnPlan`。
+- **誰讀取**：`ClearStep`、`DetonationChain` 與 `MatchGemsGameController.TrySwap`。
+- **原理**：`SpecialGemSpawnInfo` 繼續表示「一顆」；Plan 才表示「這一拍的全部」。不要把兩種責任塞進同一 struct。
+
+```csharp
+using System;
+using System.Collections.Generic;
+
+namespace MatchGems.Core
+{
+    /// <summary>同一拍所有特殊石生成結果。</summary>
+    public sealed class SpecialGemSpawnPlan
+    {
+        private static readonly SpecialGemSpawnInfo[] EmptySpawns =
+            Array.Empty<SpecialGemSpawnInfo>();
+
+        private readonly SpecialGemSpawnInfo[] _spawns;
+
+        public static SpecialGemSpawnPlan None { get; } =
+            new SpecialGemSpawnPlan(EmptySpawns);
+
+        public IReadOnlyList<SpecialGemSpawnInfo> Spawns => _spawns;
+        public int Count => _spawns.Length;
+        public bool HasSpawns => Count > 0;
+
+        public SpecialGemSpawnPlan(
+            IReadOnlyList<SpecialGemSpawnInfo> spawns)
+        {
+            _spawns = new SpecialGemSpawnInfo[spawns.Count];
+
+            for (int i = 0; i < spawns.Count; i++)
+            {
+                _spawns[i] = spawns[i];
+            }
+        }
+
+        public bool Contains(CellCoord coord)
+        {
+            for (int i = 0; i < _spawns.Length; i++)
+            {
+                CellCoord spawnCoord = _spawns[i].SpawnCoord;
+
+                if (spawnCoord.X == coord.X && spawnCoord.Y == coord.Y)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+}
+```
+
+**立即驗證**：先只建立 `SpecialGemSpawnPlan.None`，Console 印出的 `Count` 必須是 `0`、`HasSpawns` 必須是 `false`。
+
+#### ⑨-b `Assets/Scripts/Core/BoardFlowController.cs`（改既有：先分群，再逐群選一顆）
+
+- **精確落點**：用下面版本取代公開 `CreateSpawn`、私有 `CreateSpecialGemSpawn`、`FindBestSpecialLine` 與 `TryFindBombSpawn`；新增 `CreateSpawnForGroup`、`GroupConnectedLines`、`LinesShareCoord`。
+- **誰呼叫**：Controller 改呼叫 `CreateSpawnPlan`。
+- **原理**：外層分群決定「有幾次生成機會」；內層優先序只決定「這一群生成哪種」。若仍對整個 `MatchResult` 只跑一次最佳候選，第二個獨立群組必定被淘汰。
+
+公開入口改成：
+
+```csharp
+public SpecialGemSpawnPlan CreateSpawnPlan(
+    MatchResult result,
+    IReadOnlyList<CellCoord> moveCells)
+{
+    return CreateSpecialGemSpawnPlan(result, moveCells);
+}
+```
+
+新增整拍計畫與群內判定：
+
+```csharp
+private SpecialGemSpawnPlan CreateSpecialGemSpawnPlan(
+    MatchResult result,
+    IReadOnlyList<CellCoord> moveCells)
+{
+    List<List<MatchLine>> groups =
+        GroupConnectedLines(result.Line);
+    List<SpecialGemSpawnInfo> spawns =
+        new List<SpecialGemSpawnInfo>();
+
+    for (int i = 0; i < groups.Count; i++)
+    {
+        SpecialGemSpawnInfo spawn =
+            CreateSpawnForGroup(groups[i], moveCells);
+
+        if (spawn.HasSpecialGem)
+        {
+            spawns.Add(spawn);
+        }
+    }
+
+    return spawns.Count == 0
+        ? SpecialGemSpawnPlan.None
+        : new SpecialGemSpawnPlan(spawns);
+}
+
+private SpecialGemSpawnInfo CreateSpawnForGroup(
+    IReadOnlyList<MatchLine> lines,
+    IReadOnlyList<CellCoord> moveCells)
+{
+    MatchLine bestLine = FindBestSpecialLine(
+        lines,
+        moveCells,
+        out CellCoord bestCoord);
+
+    if (bestLine != null && bestLine.Length >= 5)
+    {
+        return GemFactory.CreateSpawnInfo(
+            bestLine.Color,
+            bestLine.Length,
+            bestLine.Direction,
+            true,
+            bestCoord);
+    }
+
+    if (TryFindBombSpawn(lines, out SpecialGemSpawnInfo bombSpawn))
+    {
+        return bombSpawn;
+    }
+
+    if (bestLine != null)
+    {
+        return GemFactory.CreateSpawnInfo(
+            bestLine.Color,
+            bestLine.Length,
+            bestLine.Direction,
+            true,
+            bestCoord);
+    }
+
+    return SpecialGemSpawnInfo.None;
+}
+```
+
+把第 8 項的 `FindBestSpecialLine` 第一個參數由 `MatchResult result` 改成 `IReadOnlyList<MatchLine> lines`，方法完整版本如下；`IsBetterSpecialLine`、`GetSpecialLineRank` 與 `TryGetKeyGemCoord` 保持第 8 項版本：
+
+```csharp
+private MatchLine FindBestSpecialLine(
+    IReadOnlyList<MatchLine> lines,
+    IReadOnlyList<CellCoord> moveCells,
+    out CellCoord bestCoord)
+{
+    MatchLine bestLine = null;
+    bool bestContainsKeyGem = false;
+    bestCoord = new CellCoord(0, 0);
+
+    for (int i = 0; i < lines.Count; i++)
+    {
+        MatchLine candidate = lines[i];
+
+        if (candidate.Length < 4)
+        {
+            continue;
+        }
+
+        bool containsKeyGem = TryGetKeyGemCoord(
+            candidate,
+            moveCells,
+            out CellCoord candidateCoord);
+
+        if (!IsBetterSpecialLine(
+                candidate,
+                containsKeyGem,
+                bestLine,
+                bestContainsKeyGem))
+        {
+            continue;
+        }
+
+        bestLine = candidate;
+        bestContainsKeyGem = containsKeyGem;
+        bestCoord = candidateCoord;
+    }
+
+    return bestLine;
+}
+```
+
+把第 7 項修好的 `TryFindBombSpawn` 改為接收單一群組；交點驗證仍沿用第 7 項的 `TryGetIntersection(..., out CellCoord)`：
+
+```csharp
+private bool TryFindBombSpawn(
+    IReadOnlyList<MatchLine> lines,
+    out SpecialGemSpawnInfo bombSpawn)
+{
+    bombSpawn = SpecialGemSpawnInfo.None;
+
+    for (int a = 0; a < lines.Count; a++)
+    {
+        for (int b = a + 1; b < lines.Count; b++)
+        {
+            MatchLine lineA = lines[a];
+            MatchLine lineB = lines[b];
+
+            if (lineA.Direction == lineB.Direction ||
+                lineA.Color != lineB.Color ||
+                !TryGetIntersection(
+                    lineA,
+                    lineB,
+                    out CellCoord intersection))
+            {
+                continue;
+            }
+
+            bombSpawn = new SpecialGemSpawnInfo(
+                true,
+                GemFactory.CreateBomb(lineA.Color),
+                intersection);
+            return true;
+        }
+    }
+
+    return false;
+}
+```
+
+新增共享座標分群：
+
+```csharp
+private List<List<MatchLine>> GroupConnectedLines(
+    IReadOnlyList<MatchLine> lines)
+{
+    List<List<MatchLine>> groups =
+        new List<List<MatchLine>>();
+    bool[] assigned = new bool[lines.Count];
+
+    for (int i = 0; i < lines.Count; i++)
+    {
+        if (assigned[i])
+        {
+            continue;
+        }
+
+        List<MatchLine> group =
+            new List<MatchLine> { lines[i] };
+        assigned[i] = true;
+
+        for (int groupIndex = 0;
+             groupIndex < group.Count;
+             groupIndex++)
+        {
+            MatchLine current = group[groupIndex];
+
+            for (int candidateIndex = 0;
+                 candidateIndex < lines.Count;
+                 candidateIndex++)
+            {
+                if (assigned[candidateIndex] ||
+                    !LinesShareCoord(
+                        current,
+                        lines[candidateIndex]))
+                {
+                    continue;
+                }
+
+                assigned[candidateIndex] = true;
+                group.Add(lines[candidateIndex]);
+            }
+        }
+
+        groups.Add(group);
+    }
+
+    return groups;
+}
+
+private bool LinesShareCoord(MatchLine lineA, MatchLine lineB)
+{
+    for (int i = 0; i < lineA.Coords.Count; i++)
+    {
+        if (lineB.Contain(lineA.Coords[i]))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+```
+
+**立即驗證**：以兩條互不共享座標的四連建立 `MatchResult`，`CreateSpawnPlan(...).Count` 必須為 `2`；再以共享交點的橫三＋直三建立 T 型，Count 必須為 `1`，且 Power 是 `Bomb`。
+
+#### ⑨-c `BoardFlowController.cs`（改既有：保留並寫回全部生成格）
+
+- **精確落點**：完整取代 `ClearStep`、`RemoveSpawnCoord`、`ApplySpecialSpawn`。
+- **誰呼叫**：Controller 把上一小節取得的 Plan 傳入 `ClearStep`。
+- **原理**：Plan 是多筆後，清除保護與資料寫回必須同時多筆化；任何一邊仍只處理第一筆都會留下半套盤面。
+
+```csharp
+public ClearStepResult ClearStep(
+    BoardModel board,
+    MatchResult result,
+    SpecialGemSpawnPlan spawnPlan,
+    out DetonationChain chain)
+{
+    State = BoardState.Clearing;
+    List<CellCoord> coords = result.GetUniqueCoords();
+    RemoveSpawnCoords(coords, spawnPlan);
+
+    chain = _specialGemActivator.BeginChain(
+        board,
+        coords,
+        spawnPlan);
+
+    List<GemType> clearedGemTypes = new List<GemType>();
+    ClearCoords(board, coords, clearedGemTypes);
+    ApplySpecialSpawns(board, spawnPlan);
+
+    return new ClearStepResult(coords, clearedGemTypes);
+}
+
+private void RemoveSpawnCoords(
+    List<CellCoord> coords,
+    SpecialGemSpawnPlan spawnPlan)
+{
+    for (int i = coords.Count - 1; i >= 0; i--)
+    {
+        if (spawnPlan.Contains(coords[i]))
+        {
+            coords.RemoveAt(i);
+        }
+    }
+}
+
+private void ApplySpecialSpawns(
+    BoardModel board,
+    SpecialGemSpawnPlan spawnPlan)
+{
+    for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+    {
+        SpecialGemSpawnInfo spawn = spawnPlan.Spawns[i];
+        board.SetGem(spawn.SpawnCoord, spawn.GemData);
+    }
+}
+```
+
+> 這裡直接沿用第 6 項的 `ClearCoords`，維持「讀顏色 → 清資料」的逐格順序。不要把已刪除的舊 `ClearGemTypes` 抄回來，也不要在 `ClearGems` 後才讀顏色。
+
+#### ⑨-d `DetonationChain.cs`／`SpecialGemActivator.cs`（改既有：所有新生格先佔住 `_seen`）
+
+- **精確落點**：完整取代 `DetonationChain` 建構式與 `SpecialGemActivator.BeginChain`。
+- **誰呼叫**：`ClearStep` 呼叫 `BeginChain`；`BeginChain` 建立 Chain。
+- **原理**：新生特殊石不應被同一拍的既有特殊石能力重新登記。若只把 Plan 第一格放進 `_seen`，第二顆仍可能生完立刻被炸掉。
+
+`DetonationChain.cs`：
+
+```csharp
+public DetonationChain(
+    BoardModel board,
+    SpecialGemSpawnPlan spawnPlan)
+{
+    _board = board;
+
+    for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+    {
+        _seen.Add(ToKey(spawnPlan.Spawns[i].SpawnCoord));
+    }
+}
+```
+
+`SpecialGemActivator.cs`：
+
+```csharp
+public DetonationChain BeginChain(
+    BoardModel board,
+    IReadOnlyList<CellCoord> coords,
+    SpecialGemSpawnPlan spawnPlan)
+{
+    DetonationChain chain =
+        new DetonationChain(board, spawnPlan);
+
+    for (int i = 0; i < coords.Count; i++)
+    {
+        chain.TryRegister(coords[i]);
+    }
+
+    return chain;
+}
+```
+
+#### ⑨-e `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：逐筆刷新 View）
+
+- **精確落點**：在 `TrySwap` 的 `while (result.HasMatch)` 內，取代建立 `spawnInfo`、呼叫 `ClearStep` 與單格 `RefreshGem` 的區段。收尾章節的完整 `TrySwap` 也必須使用同一版本。
+- **誰呼叫**：交換主流程每個 combo 拍執行一次。
+- **原理**：`ApplySpecialSpawns` 只改 Model；每一顆仍在原位的活 Tile 都要各自 `RefreshGem`，否則可能出現「資料有兩顆，畫面只看得出一顆」。
+
+```csharp
+SpecialGemSpawnPlan spawnPlan =
+    _boardFlowController.CreateSpawnPlan(result, _moveCells);
+
+ClearStepResult clearStepResult =
+    _boardFlowController.ClearStep(
+        _boardModel,
+        result,
+        spawnPlan,
+        out DetonationChain chain);
+
+comboCount++;
+
+await _boardView.AnimateClearAsync(
+    clearStepResult.ClearedCoords,
+    _clearAnimationDuration);
+
+for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+{
+    _boardView.RefreshGem(
+        _boardModel,
+        spawnPlan.Spawns[i].SpawnCoord);
+}
+```
+
+**雙生成固定盤型**
+
+交換前把局部兩列設成：
+
+```text
+上列：R P R R
+下列：P R P P
+       ↑
+交換 x=1 的上下兩顆
+```
+
+交換後應成為：
+
+```text
+上列：R R R R  → 一顆 HLine
+下列：P P P P  → 一顆 HLine
+```
+
+**立即驗證**
+
+- 交換前 `MatchResult.HasMatch == false`。
+- 交換後 `spawnPlan.Count == 2`。
+- `Spawns` 內同時包含上下兩個 moved cells，且 Power 都是 `HLine`。
+- `ClearStep` 後兩個生成格都仍有 Gem，沒有被自己的配對拍清除。
+- 動畫後兩個 Tile 都原地換成 Line 外觀；不能只看資料 Log。
+- 再測 T／L：共享交點只生成一顆 Bomb，證明分群沒有把同一形狀拆成兩顆。
+
 ### 深層機制：同方向直線石為什麼看起來分兩次消除
 
 - **觸發時機**：普通配對的清除清單中包含既有的橫消石或直消石。
@@ -1121,7 +1594,7 @@ sequenceDiagram
 
 先保留資料與連鎖分層，不要為了畫面直接把 `ClearStep` 和 `DetonationStep` 合併。以下是可直接接到目前 Repo 的最小版本：一般配對維持普通 Pop，引爆拍先變白再 Pop，讓玩家看得出第二拍來自特殊能力。
 
-#### ⑨-a `Assets/Scripts/View/GemTile.cs`（改既有：加入引爆版 Pop）
+#### ⑩-a `Assets/Scripts/View/GemTile.cs`（改既有：加入引爆版 Pop）
 
 - **精確落點**：在 `PopAsync` 後面新增 `DetonationPopAsync`。
 - **誰呼叫**：下一步 `BoardView.AnimateDetonationAsync`。
@@ -1140,7 +1613,7 @@ public async Task DetonationPopAsync(float duration)
 }
 ```
 
-#### ⑨-b `Assets/Scripts/View/BoardView.cs`（改既有：動畫完成後才進 Pool）
+#### ⑩-b `Assets/Scripts/View/BoardView.cs`（改既有：動畫完成後才進 Pool）
 
 - **精確落點**：完整取代 `AnimateClearAsync`；新增 `AnimateDetonationAsync`；刪除 `ReleaseeGemTile`，改成拼字正確的 `ReleaseGemTile`。
 - **誰呼叫**：`TrySwap` 的一般配對呼叫 `AnimateClearAsync`；下一步 `RunDetonationAsync` 呼叫 `AnimateDetonationAsync`。
@@ -1227,7 +1700,7 @@ private void ReleaseGemTile(CellCoord coord)
 }
 ```
 
-#### ⑨-c `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：引爆拍改走專用 View API）
+#### ⑩-c `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：引爆拍改走專用 View API）
 
 - **精確落點**：完整取代並更名 `RunDetonactionAsync`。
 - **誰呼叫**：`TrySwap` 在普通配對動畫之後、重力之前 `await RunDetonationAsync(chain)`。
@@ -1264,7 +1737,7 @@ await RunDetonactionAsync(chain);
 await RunDetonationAsync(chain);
 ```
 
-> ⑨-a～⑨-c 是一個 atomic step：`GemTile`、`BoardView`、Controller 三處全部接完才編譯，否則會暫時出現找不到新方法的 `CS1061`。
+> ⑩-a～⑩-c 是一個 atomic step：`GemTile`、`BoardView`、Controller 三處全部接完才編譯，否則會暫時出現找不到新方法的 `CS1061`。
 
 完整演出順序現在是：
 
@@ -1294,11 +1767,15 @@ await RunDetonationAsync(chain);
 | 炸彈範圍包含直線石 | 3 以上 | 每顆特殊石只登記一次 | 一層一層炸，最後才落下 |
 | 兩條分離的同色橫／直線 | 依各自配對 | 不得在假交叉點生成炸彈 | 無關寶石不被覆蓋 |
 | 五連與四連同時成立 | 依設計 | 五連候選獲勝 | 生成結果與優先序一致 |
+| 一次交換形成兩組獨立四連 | 1 個配對拍 | `SpawnPlan.Count == 2`，兩個生成格都保留 | 兩顆 Tile 都原地換成 Line 外觀 |
+| 共享交點的 T／L | 1 個配對拍 | 同一群只產生 1 顆 Bomb | 交點原地換成 Bomb 外觀 |
 
 ### 第三段完成檢查
 
 - [ ] 炸彈只在兩條 MatchLine 真正相交時生成。
 - [ ] 五連不會被稍後掃到的四連覆蓋。
+- [ ] 兩組獨立四連會得到兩筆 Spawn，T／L 共享群仍只得到一筆。
+- [ ] Plan 內全部生成格都從清除清單排除、寫回 Model、預佔 `_seen` 並刷新 View。
 - [ ] 同方向直線石的兩拍座標沒有重複。
 - [ ] 學員能說明「資料沒有重複」與「畫面分兩拍」是兩件事。
 - [ ] 特殊石連鎖全部完成後才套用重力與補珠。
@@ -1310,7 +1787,7 @@ await RunDetonationAsync(chain);
 
 目前交換入口是非同步流程。若任一 View 動畫丟出例外，`SetIdle()` 可能永遠走不到，輸入會一直被 Busy 狀態擋住。
 
-### ⑫ `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：完整取代 `TrySwap`）
+### ⑬ `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：完整取代 `TrySwap`）
 
 - **精確落點**：完整取代目前的 `TrySwap(CellCoord from, CellCoord to)`；方法內的 `RunDetonactionAsync` 呼叫同步改成前一節建立的 `RunDetonationAsync`。
 - **誰呼叫**：`ConfigureInput` 透過 `_boardInput.SwapAction = TrySwap` 接線。
@@ -1351,14 +1828,14 @@ private async void TrySwap(CellCoord from, CellCoord to)
 
         while (result.HasMatch)
         {
-            SpecialGemSpawnInfo spawnInfo =
-                _boardFlowController.CreateSpawn(result, _moveCells);
+            SpecialGemSpawnPlan spawnPlan =
+                _boardFlowController.CreateSpawnPlan(result, _moveCells);
 
             ClearStepResult clearStepResult =
                 _boardFlowController.ClearStep(
                     _boardModel,
                     result,
-                    spawnInfo,
+                    spawnPlan,
                     out DetonationChain chain);
 
             comboCount++;
@@ -1367,11 +1844,11 @@ private async void TrySwap(CellCoord from, CellCoord to)
                 clearStepResult.ClearedCoords,
                 _clearAnimationDuration);
 
-            if (spawnInfo.HasSpecialGem)
+            for (int i = 0; i < spawnPlan.Spawns.Count; i++)
             {
                 _boardView.RefreshGem(
                     _boardModel,
-                    spawnInfo.SpawnCoord);
+                    spawnPlan.Spawns[i].SpawnCoord);
             }
 
             await RunDetonationAsync(chain);
@@ -1410,7 +1887,170 @@ private async void TrySwap(CellCoord from, CellCoord to)
 - 正常 combo 全部落補後 State 是 Idle。
 - 在任一動畫方法暫時 `throw new System.Exception("測試")`；Console 會收到例外，但下一次檢查 State 仍是 Idle。測完立刻移除故意丟錯。
 
-前面的 ⑥ 與 ⑨-c 已經把 `DetonactionStep`／`RunDetonactionAsync` 統一改成 `DetonationStep`／`RunDetonationAsync`。這不是執行 Bug，但搜尋、講解與未來 API 使用都會被錯字持續污染；兩處必須同一個 atomic step 一起完成，避免半套更名造成編譯錯誤。
+前面的 ⑥ 與 ⑩-c 已經把 `DetonactionStep`／`RunDetonactionAsync` 統一改成 `DetonationStep`／`RunDetonationAsync`。這不是執行 Bug，但搜尋、講解與未來 API 使用都會被錯字持續污染；兩處必須同一個 atomic step 一起完成，避免半套更名造成編譯錯誤。
+
+## 課堂除錯快捷：一步形成兩組四連／五連
+
+現場已經有 `強制更新所有寶石變普通`，可以把整盤 `GemData.Power` 還原成 `Normal`；但若要重現「一次交換同時形成兩個獨立特殊石候選」，每次手動排 8 × 8 棋盤太慢，也很難確定排盤前沒有藏著其他三連。
+
+這裡新增兩個 `ContextMenu`：
+
+- `測試盤面/一步雙四連`
+- `測試盤面/一步雙五連`
+
+兩個快捷都先用六色循環重建整盤，因此舊 POWER 狀態會隨新的普通 `GemData` 一起清掉。接著只在中央兩列寫入測試形狀，最後由同一個 `MatchFinder` 做資料預驗證：交換前必須完全沒有配對；暫時交換中央上下兩格後，必須恰好得到兩條指定長度的橫線；驗證完立即換回，所以畫面仍停在「等待學員完成一步」的狀態。
+
+```mermaid
+flowchart LR
+    C["選 ContextMenu"] --> F["六色循環重建整盤<br/>POWER 回到 Normal"]
+    F --> P["中央兩列寫入<br/>RR?R / BB?B"]
+    P --> V["資料層暫時交換並掃描"]
+    V --> A{"恰好兩條<br/>且長度正確？"}
+    A -->|是| R["交換回原狀並刷新 View"]
+    A -->|否| E["Console 回報預驗證失敗"]
+```
+
+### `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：新增固定盤面 ContextMenu）
+
+- **精確落點**：在 `_moveCells` 欄位後加入 `TestGemTypes`；在類別結尾、最後一個 `}` 前加入兩個 ContextMenu 與三個私有方法。
+- **誰呼叫**：講師在 Play Mode 對 `MatchGemsGameController` 元件開啟右鍵選單；兩個選單都只呼叫 `ArrangeDoubleLineMatchBoard`。
+- **原理**：五連不是先排四顆同色再塞第五顆，而是排成 `RR?RR`；四連排成 `RR?R`。問號格與下一列互放對方需要的顏色，交換前沒有三連，交換後上下兩列同時完成。
+- **狀態邊界**：未進 Play Mode、Board 尚未建立或 Flow 不在 `Idle` 時只警告、不改盤；測試快捷不碰 Pool、重力、消除或特殊石生成架構。
+
+先在欄位區加入固定的六色循環表：
+
+```csharp
+private static readonly GemType[] TestGemTypes =
+{
+    GemType.Red,
+    GemType.Blue,
+    GemType.Green,
+    GemType.Yellow,
+    GemType.Purple,
+    GemType.Pink
+};
+```
+
+再於類別結尾加入完整方法：
+
+```csharp
+[ContextMenu("測試盤面/一步雙四連")]
+private void ArrangeDoubleFourMatchBoard()
+{
+    ArrangeDoubleLineMatchBoard(4);
+}
+
+[ContextMenu("測試盤面/一步雙五連")]
+private void ArrangeDoubleFiveMatchBoard()
+{
+    ArrangeDoubleLineMatchBoard(5);
+}
+
+private void ArrangeDoubleLineMatchBoard(int lineLength)
+{
+    if (_boardModel == null || _boardView == null)
+    {
+        Debug.LogWarning("請先進入 Play Mode，等棋盤建立後再使用測試盤面快捷。");
+        return;
+    }
+
+    if (_isBusy)
+    {
+        Debug.LogWarning("棋盤流程仍在運作，請等 State 回到 Idle 再排測試盤面。");
+        return;
+    }
+
+    if (_boardModel.Width < lineLength || _boardModel.Height < 2)
+    {
+        Debug.LogWarning($"一步雙{lineLength}連至少需要 {lineLength} × 2 的棋盤。");
+        return;
+    }
+
+    FillTestPattern();
+
+    int firstRow = Mathf.Max(0, _boardModel.Height / 2 - 1);
+    int secondRow = firstRow + 1;
+    int swapColumn = 2;
+
+    for (int x = 0; x < lineLength; x++)
+    {
+        _boardModel.SetGem(x, firstRow, GemType.Red);
+        _boardModel.SetGem(x, secondRow, GemType.Blue);
+    }
+
+    _boardModel.SetGem(swapColumn, firstRow, GemType.Blue);
+    _boardModel.SetGem(swapColumn, secondRow, GemType.Red);
+
+    if (lineLength < _boardModel.Width)
+    {
+        _boardModel.SetGem(lineLength, firstRow, GemType.Purple);
+        _boardModel.SetGem(lineLength, secondRow, GemType.Yellow);
+    }
+
+    CellCoord from = new CellCoord(swapColumn, firstRow);
+    CellCoord to = new CellCoord(swapColumn, secondRow);
+    bool presetIsValid = ValidateDoubleLinePreset(from, to, lineLength);
+    RefreshAllGems();
+
+    string result = presetIsValid ? "通過" : "失敗，請檢查盤面生成規則";
+    Debug.Log(
+        $"一步雙{lineLength}連盤面已建立。交換 {from.pos} 與 {to.pos}；資料預驗證：{result}。");
+}
+
+private void FillTestPattern()
+{
+    for (int y = 0; y < _boardModel.Height; y++)
+    {
+        for (int x = 0; x < _boardModel.Width; x++)
+        {
+            int typeIndex = (x + y * 2) % TestGemTypes.Length;
+            _boardModel.SetGem(x, y, TestGemTypes[typeIndex]);
+        }
+    }
+}
+
+private bool ValidateDoubleLinePreset(
+    CellCoord from,
+    CellCoord to,
+    int expectedLength)
+{
+    MatchResult beforeSwap = _boardFlowController.FindMatches(_boardModel);
+    if (beforeSwap.HasMatch)
+    {
+        return false;
+    }
+
+    _boardModel.SwapGems(from, to);
+    MatchResult afterSwap = _boardFlowController.FindMatches(_boardModel);
+    _boardModel.SwapGems(from, to);
+
+    if (afterSwap.LineCount != 2)
+    {
+        return false;
+    }
+
+    for (int i = 0; i < afterSwap.LineCount; i++)
+    {
+        if (afterSwap.Line[i].Length != expectedLength)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+```
+
+### 現場操作與立即驗證
+
+1. 進入 Play Mode，等棋盤完全建立且沒有動畫。
+2. 在 `MatchGemsGameController` 元件右鍵選 `測試盤面/一步雙四連`。
+3. Console 必須顯示「資料預驗證：通過」。預設 8 × 8 棋盤交換 `(2,3)` 與 `(2,4)`。
+4. 交換後 `MatchResult.LineCount` 應為 2，兩條 Length 都是 4；用它檢查同一拍是否留下兩顆 Line 特殊石。
+5. 重新選 `測試盤面/一步雙五連`，交換同兩格；兩條 Length 都應為 5，可檢查同一拍是否留下兩顆 Rainbow。
+6. 選一次既有的 `強制更新所有寶石變普通`，確認特殊石外觀可回到普通狀態；再重排固定盤面，舊 POWER 不得殘留。
+
+> 這個快捷只證明「輸入盤面確實同時產生兩條獨立 MatchLine」。若交換後最後仍只留下單顆特殊石，證據就指向修正 9 的 SpawnPlan 單筆／多筆資料流，而不是講師排錯盤。
 
 ## 現場驗收紀錄模板
 
@@ -1429,6 +2069,7 @@ private async void TrySwap(CellCoord from, CellCoord to)
 - 初盤與補珠為什麼不能共用完全相同的選色規則？
 - 為什麼清除證據一定要在改寫 BoardModel 前保存？
 - 炸彈交叉點如何證明同時位於兩條 MatchLine？
+- 為什麼 T／L 只生一顆，但兩組互不相交的四連要生兩顆？哪一層負責分群？
 - 特殊石分兩拍時，哪些是資料事實，哪些只是 View 演出？
 - `_seen` 防止的是什麼？移除後會看見什麼具體症狀？
 - 為什麼所有引爆結束前不能先落下？
