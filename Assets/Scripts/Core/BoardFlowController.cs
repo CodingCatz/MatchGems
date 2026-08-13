@@ -193,9 +193,82 @@ namespace MatchGems.Core
         {
             return CreateSpecialGemSpawn(result, moveCells);
         }
+
+        public SpecialGemSpawnPlan CreateSpawnPlan(MatchResult result, IReadOnlyList<CellCoord> moveCells)
+        {
+            return CreateSpecialGemSpawnPlan(result, moveCells);
+        }
         #endregion 公開方法
 
         #region 私有方法
+        /// <summary>
+        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
+        /// </summary>
+        /// <param name="result"></param>
+        /// <param name="moveCells"></param>
+        private SpecialGemSpawnPlan CreateSpecialGemSpawnPlan(MatchResult result, IReadOnlyList<CellCoord> moveCells)
+        {
+            List<List<MatchLine>> groups = MatchLines(result.Line);
+            List<SpecialGemSpawnInfo> spawns = new List<SpecialGemSpawnInfo>();
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                SpecialGemSpawnInfo spawn = CreateSpecialGemSpawn(result, moveCells);
+
+                if (spawn.HasSpecialGem) spawns.Add(spawn);
+            }
+            
+            return spawns.Count == 0 
+                ? SpecialGemSpawnPlan.None
+                : new SpecialGemSpawnPlan(spawns);
+        }
+
+        private List<List<MatchLine>> MatchLines(IReadOnlyList<MatchLine> lines)
+        {
+            List<List<MatchLine>> groups = new List<List<MatchLine>>();
+            bool[] got = new bool[lines.Count];
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                List<MatchLine> group = new List<MatchLine> { lines[i] };
+                got[i] = true;
+
+                for (int g =0; g < group.Count; g++)
+                {
+                    MatchLine line = group[g];
+
+                    for (int l = 0; l < line.Length; l++)
+                    {
+                        if (got[l] || !LineShareCoord(line, lines[l]))
+                        {
+                            continue;
+                        }
+                        got[l] = true;
+                        group.Add(lines[l]);
+                    }
+                }
+                groups.Add(group);
+            }
+            return groups;
+        }
+        /// <summary>
+        /// 兩線是否有重疊的格子
+        /// </summary>
+        /// <param name="lineA"></param>
+        /// <param name="lineB"></param>
+        /// <returns></returns>
+        private bool LineShareCoord(MatchLine lineA, MatchLine lineB)
+        {
+            for (int i = 0; i < lineA.Coords.Count; i++)
+            {
+                if (lineB.Contain(lineA.Coords[i]))
+                { 
+                    return true; 
+                }
+            }
+            return false;
+        }
+
         /// <summary>
         /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
         /// </summary>
