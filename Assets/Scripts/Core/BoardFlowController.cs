@@ -148,6 +148,14 @@ namespace MatchGems.Core
         }
 
         /// <summary>
+        /// 初始化寶石
+        /// </summary>
+        /// <param name="board"></param>
+        public void FillInitial(BoardModel board)
+        {
+            _fillService.FillInitial(board);
+        }
+        /// <summary>
         /// 補充寶石
         /// </summary>
         /// <param name="board"></param>

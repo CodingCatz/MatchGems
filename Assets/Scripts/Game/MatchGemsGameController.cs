@@ -61,7 +61,7 @@ namespace MatchGems.Game
         {
             _boardModel = new BoardModel(_width, _height);
             //流程控制：補珠
-            _boardFlowController.Fill(_boardModel);
+            _boardFlowController.FillInitial(_boardModel);
         }
         /// <summary>
         /// 建立轉換器
@@ -190,6 +190,19 @@ namespace MatchGems.Game
         [ContextMenu("強制更新所有寶石變普通")]
         public void RefreshAllGemsToNormal()
         {
+            for (int y = 0; y < _boardModel.Height; y++)
+                for (int x = 0; x < _boardModel.Width; x++)
+                {
+                    CellCoord coord = new CellCoord(x, y);
+                    _boardModel.GetGem(coord).SetPower();
+                    _boardView.RefreshGem(_boardModel, coord);
+                }
+        }
+
+        [ContextMenu("強制更新面板")]
+        public void RefreshBoard()
+        {
+            _boardFlowController.FillInitial(_boardModel);
             for (int y = 0; y < _boardModel.Height; y++)
                 for (int x = 0; x < _boardModel.Width; x++)
                 {
