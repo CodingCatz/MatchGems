@@ -565,15 +565,36 @@ sequenceDiagram
 
 **修正原則**
 
-- 初盤使用 `FillInitial`：選色時排除會在左方或下方立即形成三連的顏色。
+- 現場第 18 課已經示範到「先確認禁用色號」的方向；下面沿用這個半成品補成完整版本，不改回反覆亂數重抽。
+- 初盤使用 `FillInitial`：先算出左方與下方會形成三連的「禁用色號」，再從其餘色號中抽一個。
 - 消除後補珠保留 `Fill`：允許新珠形成天降連鎖，否則遊戲不會自然 combo。
 - 不要把「禁止三消」塞進共用的 `CreateRandomGem`，因為初盤與補珠的需求不同。
 
 #### ⑤-a `Assets/Scripts/Core/FillService.cs`（改既有：加入初盤專用填充）
 
-- **精確落點**：保留原本的 `Fill(BoardModel board)` 與 `CreateRandomGem()`；在 `#region 公開方法` 加入 `FillInitial`，並在 `#region 私有方法` 加入三個判斷方法。
+- **精確落點**：保留原本的 `Fill(BoardModel board)`；在欄位區加入固定六色色票與可重用候選清單，在 `#region 公開方法` 加入 `FillInitial`，並用下面版本取代 `CreateRandomGem()`、加入三個禁用色號方法。
 - **誰呼叫**：下一步的 `BoardFlowController.FillInitial`。
-- **原理**：掃描順序固定為由下到上、由左到右，因此放置 `(x,y)` 時，只要檢查左兩格與下兩格，就能阻止新珠立刻形成三連；消除後的 `Fill` 不走這條限制，仍保留天降 combo。
+- **原理**：掃描順序固定為由下到上、由左到右，因此放置 `(x,y)` 時，左兩格與下兩格已經確定。若左兩格同色，就把該色號列為橫向禁用；下兩格同色，就列為縱向禁用。六色扣掉最多兩個禁用色後仍至少剩四個候選，所以不需要「抽錯就重抽 20 次」與可能放回錯色的 fallback。
+
+先在 `FillService` 欄位區加入單一色票來源與候選清單：
+
+```csharp
+/// <summary>現場課程目前可產生的六種寶石；順序就是穩定色號。</summary>
+public static IReadOnlyList<GemType> GemTypes { get; } =
+    new GemType[]
+    {
+        GemType.Red,
+        GemType.Blue,
+        GemType.Green,
+        GemType.Yellow,
+        GemType.Purple,
+        GemType.Pink
+    };
+
+private readonly List<int> _availableTypeIndexes = new List<int>();
+```
+
+`GemTypes` 的索引就是這段演算法使用的色號：Red 是 0、Blue 是 1……Pink 是 5。它也能取代後面固定測試盤面的 `TestGemTypes`，避免「初盤認為有六色，測試工具又手抄另一份六色」之後漂移。
 
 加入 `#region 公開方法`：
 
@@ -592,54 +613,87 @@ public void FillInitial(BoardModel board)
 }
 ```
 
-加入 `#region 私有方法`；若檔案尚無這個 region，就放在 `#endregion 公開方法` 之前並補上區塊：
+加入 `#region 私有方法`；若檔案尚無這個 region，就放在類別結尾前並補上區塊：
 
 ```csharp
 private GemType PickInitialGem(BoardModel board, CellCoord target)
 {
-    int gemCount = Enum.GetValues(typeof(GemType)).Length;
+    int horizontalForbidden = GetForbiddenTypeIndex(
+        board,
+        new CellCoord(target.X - 1, target.Y),
+        new CellCoord(target.X - 2, target.Y));
+    int verticalForbidden = GetForbiddenTypeIndex(
+        board,
+        new CellCoord(target.X, target.Y - 1),
+        new CellCoord(target.X, target.Y - 2));
 
-    // 六色盤一定找得到候選；上限避免未來顏色規則改壞時卡死。
-    for (int attempt = 0; attempt < 20; attempt++)
+    _availableTypeIndexes.Clear();
+
+    for (int typeIndex = 0; typeIndex < GemTypes.Count; typeIndex++)
     {
-        GemType candidate = (GemType)Random.Range(0, gemCount);
-
-        if (!WouldCreateInitialMatch(board, target, candidate))
+        if (typeIndex != horizontalForbidden &&
+            typeIndex != verticalForbidden)
         {
-            return candidate;
+            _availableTypeIndexes.Add(typeIndex);
         }
     }
 
-    // 安全網：不讓初始化無限迴圈。若走到這裡，要用 Log 回頭查規則。
-    return CreateRandomGem();
+    int candidateListIndex =
+        Random.Range(0, _availableTypeIndexes.Count);
+    int selectedTypeIndex =
+        _availableTypeIndexes[candidateListIndex];
+    return GemTypes[selectedTypeIndex];
 }
 
-private bool WouldCreateInitialMatch(
+private int GetForbiddenTypeIndex(
     BoardModel board,
-    CellCoord target,
-    GemType candidate)
+    CellCoord first,
+    CellCoord second)
 {
-    bool makesHorizontal =
-        HasSameColor(board, new CellCoord(target.X - 1, target.Y), candidate) &&
-        HasSameColor(board, new CellCoord(target.X - 2, target.Y), candidate);
+    if (!board.HasGem(first) || !board.HasGem(second))
+    {
+        return -1;
+    }
 
-    bool makesVertical =
-        HasSameColor(board, new CellCoord(target.X, target.Y - 1), candidate) &&
-        HasSameColor(board, new CellCoord(target.X, target.Y - 2), candidate);
+    GemType firstType = board.GetGemColor(first);
+    if (firstType != board.GetGemColor(second))
+    {
+        return -1;
+    }
 
-    return makesHorizontal || makesVertical;
+    return FindTypeIndex(firstType);
 }
 
-private bool HasSameColor(
-    BoardModel board,
-    CellCoord target,
-    GemType candidate)
+private int FindTypeIndex(GemType gemType)
 {
-    return board.HasGem(target) && board.GetGemColor(target) == candidate;
+    for (int typeIndex = 0; typeIndex < GemTypes.Count; typeIndex++)
+    {
+        if (GemTypes[typeIndex] == gemType)
+        {
+            return typeIndex;
+        }
+    }
+
+    return -1;
+}
+
+private GemType CreateRandomGem()
+{
+    int typeIndex = Random.Range(0, GemTypes.Count);
+    return GemTypes[typeIndex];
 }
 ```
 
-檔頭原本已經有 `using System;`、`using Random = UnityEngine.Random;`，不需要重複加入。
+檔頭需要保留 `using System.Collections.Generic;` 與 `using Random = UnityEngine.Random;`。改成固定色票後不再需要用 `Enum.GetValues` 算數量；若 `using System;` 沒有其他用途，可以移除。
+
+這裡的 `-1` 不是第負一種顏色，而是「這個方向沒有禁用色」的哨兵值。候選迴圈的合法色號只會是 `0` 到 `GemTypes.Count - 1`，因此永遠不會和 `-1` 撞號。
+
+**立即驗證**
+
+- 在 `PickInitialGem` 暫時印出 `horizontalForbidden`、`verticalForbidden` 與 `_availableTypeIndexes`；左右兩格都是 Red 時，候選中不得出現 0。
+- 左兩格 Red、下兩格 Blue 時，候選只會從 2、3、4、5 抽取。
+- 兩個方向禁止同一色時只排除一次，候選仍有另外五色。
+- 不論亂數結果為何，都不需要重抽；方法一次必定從合法候選中回傳。
 
 #### ⑤-b `Assets/Scripts/Core/BoardFlowController.cs`（改既有：公開初盤入口）
 
@@ -1898,7 +1952,7 @@ private async void TrySwap(CellCoord from, CellCoord to)
 - `測試盤面/一步雙四連`
 - `測試盤面/一步雙五連`
 
-兩個快捷都先用六色循環重建整盤，因此舊 POWER 狀態會隨新的普通 `GemData` 一起清掉。接著只在中央兩列寫入測試形狀，最後由同一個 `MatchFinder` 做資料預驗證：交換前必須完全沒有配對；暫時交換中央上下兩格後，必須恰好得到兩條指定長度的橫線；驗證完立即換回，所以畫面仍停在「等待學員完成一步」的狀態。
+兩個快捷都先讀 `FillService.GemTypes`，用同一份六色色票循環重建整盤，因此舊 POWER 狀態會隨新的普通 `GemData` 一起清掉。接著只在中央兩列寫入測試形狀，最後由同一個 `MatchFinder` 做資料預驗證：交換前必須完全沒有配對；暫時交換中央上下兩格後，必須恰好得到兩條指定長度的橫線；驗證完立即換回，所以畫面仍停在「等待學員完成一步」的狀態。
 
 ```mermaid
 flowchart LR
@@ -1912,26 +1966,12 @@ flowchart LR
 
 ### `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：新增固定盤面 ContextMenu）
 
-- **精確落點**：在 `_moveCells` 欄位後加入 `TestGemTypes`；在類別結尾、最後一個 `}` 前加入兩個 ContextMenu 與三個私有方法。
+- **精確落點**：不再在 Controller 手抄 `TestGemTypes`；直接讀修正 5 定義的 `FillService.GemTypes`。在類別結尾、最後一個 `}` 前加入兩個 ContextMenu 與三個私有方法。
 - **誰呼叫**：講師在 Play Mode 對 `MatchGemsGameController` 元件開啟右鍵選單；兩個選單都只呼叫 `ArrangeDoubleLineMatchBoard`。
 - **原理**：五連不是先排四顆同色再塞第五顆，而是排成 `RR?RR`；四連排成 `RR?R`。問號格與下一列互放對方需要的顏色，交換前沒有三連，交換後上下兩列同時完成。
 - **狀態邊界**：未進 Play Mode、Board 尚未建立或 Flow 不在 `Idle` 時只警告、不改盤；測試快捷不碰 Pool、重力、消除或特殊石生成架構。
 
-先在欄位區加入固定的六色循環表：
-
-```csharp
-private static readonly GemType[] TestGemTypes =
-{
-    GemType.Red,
-    GemType.Blue,
-    GemType.Green,
-    GemType.Yellow,
-    GemType.Purple,
-    GemType.Pink
-};
-```
-
-再於類別結尾加入完整方法：
+六色色票已由 `FillService.GemTypes` 定義；Controller 不新增第二份。於類別結尾加入完整方法：
 
 ```csharp
 [ContextMenu("測試盤面/一步雙四連")]
@@ -2003,8 +2043,12 @@ private void FillTestPattern()
     {
         for (int x = 0; x < _boardModel.Width; x++)
         {
-            int typeIndex = (x + y * 2) % TestGemTypes.Length;
-            _boardModel.SetGem(x, y, TestGemTypes[typeIndex]);
+            int typeIndex =
+                (x + y * 2) % FillService.GemTypes.Count;
+            _boardModel.SetGem(
+                x,
+                y,
+                FillService.GemTypes[typeIndex]);
         }
     }
 }
