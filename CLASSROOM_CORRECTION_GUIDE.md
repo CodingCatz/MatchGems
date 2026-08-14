@@ -1135,7 +1135,7 @@ private int GetSpecialLineRank(MatchLine line)
 
 不要在找到第一條或最後一條時直接決定，應使用 `FindBestSpecialLine`／`IsBetterSpecialLine` 這類具名比較方法，讓優先規則可以單獨測試。
 
-### 修正 9：一拍要保存每個獨立配對群組的生成結果
+### 修正 9：一拍要保存每個達標 MatchPattern 的生成結果
 
 **目前症狀**
 
