@@ -41,6 +41,8 @@ namespace MatchGems.Game
         /// 非處於待機狀態(運算中)
         /// </summary>
         private bool _isBusy => _boardFlowController.State != BoardState.Idle;
+        [SerializeField]
+        private AudioClip _sfxCombo;
         #endregion 基本參數
 
         #region 生命週期
@@ -123,6 +125,10 @@ namespace MatchGems.Game
 
                 //清除資料(依組別排除特殊石的資料)
                 ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnPlan, out DetonationChain chain);
+                
+                //音效置入點
+                if (_sfxCombo != null) 
+                    AudioSource.PlayClipAtPoint(_sfxCombo, transform.position, 0.5f);
 
                 comboCount++;//計算連鎖數
                 await _boardView.AnimateClearAsync(clearStepResult.ClearedCoords, _clearAnimationDuration);
