@@ -29,7 +29,7 @@
 | 6 | P1 | 清除後才讀取顏色 | `ClearedGemTypes` 永遠拿不到已清除寶石 | `BoardFlowController.cs` |
 | 7 | P1 | 炸彈沒有驗證兩線真的相交 | 分離的橫線與直線也可能生出炸彈 | `BoardFlowController.cs` |
 | 8 | P1 | 特殊線選擇被後面的短線覆蓋 | 五連可能輸給四連，與註解優先序不同 | `BoardFlowController.cs` |
-| 9 | P1 | 一拍只能保存一筆特殊石生成結果 | 同一拍有多個獨立配對形狀時，盤面只留下其中一顆 | Pattern／Flow／Chain／Controller |
+| 9 | P1 | 一拍只能保存一筆特殊石生成結果 | 同一拍有多個獨立配對形狀時，盤面只留下其中一顆 | 分群／Plan／Flow／Chain／Controller |
 | 10 | P2 | 同方向直線石看起來分兩次消除 | 先消短線，再消同一排／列剩餘寶石 | Controller／View 時序 |
 | 11 | P2 | 有洞時 `MatchFinder` 直接讀起點顏色 | 若在未補滿的棋盤掃描，可能讀到空格 | `MatchFinder.cs` |
 | 12 | P2 | Pool 重設時只套用普通色 | 特殊石經物件池重用後可能失去特殊外觀 | `GemTile.cs` |
@@ -43,7 +43,7 @@
 
 - **改既有**：`GridMapper`、`BoardInput`、`FillService`、`BoardFlowController`、`MatchFinder`。
 - **改既有**：`GemTile`、`BoardView`、`MatchGemsGameController`。
-- **新增三個 Runtime 類別**：`MatchPattern` 表示一個完整配對形狀、`MatchPatternBuilder` 把原始連線整理成形狀、`SpecialGemSpawnPlan` 保存同一拍 0～N 筆生成結果；單筆 `SpecialGemSpawnInfo` 繼續表示一顆。
+- **新增一個 Runtime 類別**：`SpecialGemSpawnPlan` 保存同一拍 0～N 筆生成結果；分群留在 `BoardFlowController` 的私有方法，不額外建立 Pattern／Builder 類別。
 - **其餘新增方法**：`ApplyAppearance` 與三個外觀選擇方法、`FillInitial`、特殊線比較方法、`DetonationPopAsync`、`AnimateDetonationAsync`。
 
 ### 本次實作順序
@@ -59,7 +59,7 @@
 7. `GemTile.ResetGem`：Pool 重用時也走同一條完整外觀流程。
 8. `TryFindBombSpawn + TryGetIntersection`：atomic 阻止假交叉炸彈。
 9. `CreateSpecialGemSpawn + FindBestSpecialLine`：實作五連／T-L／四連優先序。
-10. `MatchPattern → MatchPatternBuilder → SpecialGemSpawnPlan → Flow → Chain → Controller`：atomic 讓每個達標的獨立配對形狀各自生成一顆；T／L 的兩條線仍合成一個形狀。
+10. `BoardFlowController.GroupLines → SpecialGemSpawnPlan → Flow → Chain → Controller`：atomic 讓每個達標的獨立群組各自生成一顆；T／L 的兩條線仍合成一組。
 11. `GemTile → BoardView → GameController`：atomic 接上可辨識的引爆拍並修正回收時機。
 12. `MatchGemsGameController.TrySwap`：最後用 `try/finally` 收住整條非同步流程。
 13. 依固定盤面回歸表重跑；前一步沒過，不進下一步。
@@ -1135,7 +1135,7 @@ private int GetSpecialLineRank(MatchLine line)
 
 不要在找到第一條或最後一條時直接決定，應使用 `FindBestSpecialLine`／`IsBetterSpecialLine` 這類具名比較方法，讓優先規則可以單獨測試。
 
-### 修正 9：一拍要保存每個達標 MatchPattern 的生成結果
+### 修正 9：一拍要保存每個達標群組的生成結果
 
 **目前症狀**
 
@@ -1144,64 +1144,60 @@ private int GetSpecialLineRank(MatchLine line)
 這裡要先分清楚「掃描結果」和「規則成立單位」：
 
 - `MatchLine` 是 `MatchFinder` 掃描出來的一條橫線或直線，只是組成形狀的原始材料。
-- `MatchPattern` 才是一次特殊石規則判定。彼此共享座標的線屬於同一個 Pattern；T／L 雖然由橫線和直線兩條 `MatchLine` 組成，但兩線共享真正交點，所以只是一個 Pattern、只判定一次 Bomb。
-- 完全不共享座標的線屬於不同 Pattern。Pattern 數量沒有上限；每個 Pattern 只要達到五連、T／L 或四連條件，就各自生成一顆。
+- 彼此共享座標的 Line 屬於同一個群組。T／L 雖然有橫、直兩條 `MatchLine`，但兩線共享真正交點，所以只判定一次、只生成一顆 Bomb。
+- 完全不共享座標的 Line 屬於不同群組。群組數量沒有上限；每組只要達到五連、T／L 或四連條件，就各自生成一顆。
 
-不要用 `moveCells.Count` 推算生成數量。移動格只負責同一個 Pattern 內的生成座標優先權；真正決定生成數量的是達標的 `MatchPattern` 數量。
+不要用 `moveCells.Count` 推算生成數量。移動格只負責群組內的生成座標優先權；真正決定生成數量的是達標群組數。
 
 ```mermaid
 flowchart LR
-    M["MatchFinder<br/>產生 MatchLine"] --> G["MatchPatternBuilder<br/>共享座標合成 Pattern"]
-    G --> A["Pattern A<br/>規則判定一次"]
-    G --> B["Pattern B<br/>規則判定一次"]
-    A --> P["SpecialGemSpawnPlan<br/>達標 Pattern 各一筆"]
+    M["MatchFinder<br/>產生 MatchLine"] --> G["BoardFlowController.GroupLines<br/>共享座標合成群組"]
+    G --> A["群組 A<br/>規則判定一次"]
+    G --> B["群組 B<br/>規則判定一次"]
+    A --> P["SpecialGemSpawnPlan<br/>達標群組各一筆"]
     B --> P
     P --> K["保留全部生成格"]
     P --> W["寫回全部 GemData"]
     P --> R["逐格 RefreshGem"]
 ```
 
-> ⑨-a～⑨-g 是同一個 atomic step。只改回傳型別會連續出現編譯錯誤；只建立 Pattern、不改 Flow、Chain 與 Controller，則會得到「Plan 算到多顆，盤面或畫面只完成一顆」的半套結果。
+> ⑨-a～⑨-e 是同一個 atomic step。只改回傳型別會連續出現編譯錯誤；只改分群、不改 Flow、Chain 與 Controller，則會得到「Plan 算到多顆，盤面或畫面只完成一顆」的半套結果。
 
 #### ⑨-a `Assets/Scripts/Core/SpecialGemSpawnPlan.cs`（新增：本拍 0～N 筆生成計畫）
 
 - **精確落點**：在 `Assets/Scripts/Core/` 新增整個檔案。
-- **誰建立**：`BoardFlowController.CreateSpecialGemSpawnPlan`。
+- **誰建立**：`BoardFlowController.CreateSpawnPlan`。
 - **誰讀取**：`ClearStep`、`DetonationChain` 與 `MatchGemsGameController.TrySwap`。
 - **原理**：`SpecialGemSpawnInfo` 繼續表示「一顆」；Plan 才表示「這一拍的全部」。不要把兩種責任塞進同一 struct。
 
 ```csharp
-using System;
 using System.Collections.Generic;
 
 namespace MatchGems.Core
 {
-    /// <summary>同一拍所有特殊石生成結果。</summary>
+    /// <summary>
+    /// 保存同一拍要生成的全部特殊石。
+    /// 一筆 SpecialGemSpawnInfo 代表一顆；Plan 代表這一拍的 0～N 顆。
+    /// </summary>
     public sealed class SpecialGemSpawnPlan
     {
-        private static readonly SpecialGemSpawnInfo[] EmptySpawns =
-            Array.Empty<SpecialGemSpawnInfo>();
+        private readonly List<SpecialGemSpawnInfo> _spawns =
+            new List<SpecialGemSpawnInfo>();
 
-        private readonly SpecialGemSpawnInfo[] _spawns;
-
-        public static SpecialGemSpawnPlan None { get; } =
-            new SpecialGemSpawnPlan(EmptySpawns);
-
-        public IReadOnlyList<SpecialGemSpawnInfo> Spawns => _spawns;
-        public int Count => _spawns.Length;
+        public int Count => _spawns.Count;
         public bool HasSpawns => Count > 0;
+        public SpecialGemSpawnInfo this[int index] => _spawns[index];
 
-        public SpecialGemSpawnPlan(
-            IReadOnlyList<SpecialGemSpawnInfo> spawns)
+        /// <summary>只收下有效的特殊石生成結果。</summary>
+        public void Add(SpecialGemSpawnInfo spawn)
         {
-            _spawns = new SpecialGemSpawnInfo[spawns.Count];
-
-            for (int i = 0; i < spawns.Count; i++)
+            if (spawn.HasSpecialGem)
             {
-                _spawns[i] = spawns[i];
+                _spawns.Add(spawn);
             }
         }
 
+        /// <summary>確認某格是否要保留給新生特殊石。</summary>
         public bool Contains(CellCoord coord)
         {
             for (int i = 0; i < _spawns.Length; i++)
@@ -1220,161 +1216,14 @@ namespace MatchGems.Core
 }
 ```
 
-**立即驗證**：先只建立 `SpecialGemSpawnPlan.None`，Console 印出的 `Count` 必須是 `0`、`HasSpawns` 必須是 `false`。
+**立即驗證**：建立空 Plan 時，`Count` 必須是 `0`、`HasSpawns` 必須是 `false`；加入 `SpecialGemSpawnInfo.None` 後仍為 `0`。
 
-#### ⑨-b `Assets/Scripts/Core/MatchPattern.cs`（新增：一個完整配對形狀）
+#### ⑨-b `Assets/Scripts/Core/BoardFlowController.cs`（改既有：分群後逐組判定一顆）
 
-- **精確落點**：在 `Assets/Scripts/Core/` 新增完整檔案。
-- **前置**：沿用既有 `MatchLine`。
-- **誰呼叫**：⑨-c 的 `MatchPatternBuilder` 建立並加入 Line；⑨-d 的 `BoardFlowController` 讀取 `Lines` 做規則判定。
-- **原理**：Line 的數量不等於特殊石數量。T／L 有兩條 Line，卻是一個共享交點的 Pattern；把這個概念正式做成型別，後面的 Flow 就不用一邊分群、一邊猜規則成立幾次。
-
-```csharp
-using System.Collections.Generic;
-
-namespace MatchGems.Core
-{
-    /// <summary>
-    /// 彼此透過共享座標連接的一個完整配對形狀。
-    /// 一個 Pattern 最多產生一顆特殊石。
-    /// </summary>
-    public sealed class MatchPattern
-    {
-        private readonly List<MatchLine> _lines =
-            new List<MatchLine>();
-
-        public IReadOnlyList<MatchLine> Lines => _lines;
-
-        public MatchPattern(MatchLine firstLine)
-        {
-            _lines.Add(firstLine);
-        }
-
-        public void Add(MatchLine line)
-        {
-            _lines.Add(line);
-        }
-
-        public bool SharesCoord(MatchLine candidate)
-        {
-            for (int lineIndex = 0;
-                 lineIndex < _lines.Count;
-                 lineIndex++)
-            {
-                MatchLine current = _lines[lineIndex];
-
-                if (current.Color != candidate.Color)
-                {
-                    continue;
-                }
-
-                for (int coordIndex = 0;
-                     coordIndex < current.Coords.Count;
-                     coordIndex++)
-                {
-                    if (candidate.Contain(
-                            current.Coords[coordIndex]))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-    }
-}
-```
-
-**立即驗證**：建立一條橫三 Line 當作第一條，再用共享交點的直三呼叫 `SharesCoord`，結果必須為 `true`；換成完全分離的 Line 必須為 `false`。
-
-#### ⑨-c `Assets/Scripts/Core/MatchPatternBuilder.cs`（新增：把 Line 整理成 0～N 個 Pattern）
-
-- **精確落點**：在 `Assets/Scripts/Core/` 新增完整檔案。
-- **前置**：必須先完成⑨-b。
-- **誰呼叫**：⑨-d 的 `BoardFlowController.CreateSpecialGemSpawnPlan` 每拍呼叫一次。
-- **原理**：Builder 只回答「哪些 Line 是同一個形狀」，不決定要生哪種特殊石。每次從尚未歸屬的 Line 建立 Pattern，再反覆吸收所有共享座標的 Line；反覆掃描是為了涵蓋 A 接 B、B 再接 C 的間接連接。
-
-```csharp
-using System.Collections.Generic;
-
-namespace MatchGems.Core
-{
-    /// <summary>
-    /// 將原始配對線整理成彼此獨立的完整形狀。
-    /// </summary>
-    public sealed class MatchPatternBuilder
-    {
-        public List<MatchPattern> Build(
-            IReadOnlyList<MatchLine> lines)
-        {
-            List<MatchPattern> patterns =
-                new List<MatchPattern>();
-            bool[] assigned = new bool[lines.Count];
-
-            for (int seedIndex = 0;
-                 seedIndex < lines.Count;
-                 seedIndex++)
-            {
-                if (assigned[seedIndex])
-                {
-                    continue;
-                }
-
-                MatchPattern pattern =
-                    new MatchPattern(lines[seedIndex]);
-                assigned[seedIndex] = true;
-
-                bool addedLine;
-
-                do
-                {
-                    addedLine = false;
-
-                    for (int candidateIndex = 0;
-                         candidateIndex < lines.Count;
-                         candidateIndex++)
-                    {
-                        if (assigned[candidateIndex] ||
-                            !pattern.SharesCoord(
-                                lines[candidateIndex]))
-                        {
-                            continue;
-                        }
-
-                        pattern.Add(lines[candidateIndex]);
-                        assigned[candidateIndex] = true;
-                        addedLine = true;
-                    }
-                }
-                while (addedLine);
-
-                patterns.Add(pattern);
-            }
-
-            return patterns;
-        }
-    }
-}
-```
-
-**為什麼不是掃一次就結束**：若 A 與 B 相交、B 與 C 相交，但掃到 C 時 B 還沒加入 Pattern，單次掃描可能漏掉 C。`do/while` 會在 Pattern 長大後再檢查一次，直到沒有任何 Line 能再加入。
-
-**立即驗證**：準備 A、B、C 三條 Line，其中 A 接 B、B 接 C、A 不直接接 C，Builder 必須仍得到一個含三條 Line 的 Pattern；再加入一條完全分離的 D，結果必須變成兩個 Pattern。
-
-#### ⑨-d `Assets/Scripts/Core/BoardFlowController.cs`（改既有：逐 Pattern 判定一顆）
-
-- **精確落點**：新增 `_matchPatternBuilder` 欄位；用下面版本取代公開 `CreateSpawn`、私有 `CreateSpecialGemSpawn`、`FindBestSpecialLine` 與 `TryFindBombSpawn`。刪除寫在 Flow 裡的 `MatchLines`／`GroupConnectedLines`／`LineShareCoord` 類方法。
-- **前置**：必須先完成⑨-a～⑨-c。
+- **精確落點**：用下面版本取代公開 `CreateSpawn` 與原本只回傳一筆的生成方法；把 `GroupLines`、`LinesShareCoord`、`CreateSpawnForGroup` 加在私有方法區。
+- **前置**：必須先完成⑨-a。
 - **誰呼叫**：Controller 改呼叫 `CreateSpawnPlan`。
-- **原理**：外層 Pattern 數量決定「有幾次生成機會」；內層優先序只決定「這個 Pattern 生成哪一種」。每個達標 Pattern 都會加入 Plan，沒有最多兩顆的限制；T／L 已在 Builder 合成一個 Pattern，因此只判定一次。
-
-在 `BoardFlowController` 的基本組件欄位加入：
-
-```csharp
-private readonly MatchPatternBuilder _matchPatternBuilder =
-    new MatchPatternBuilder();
-```
+- **原理**：外層群組數決定「有幾次生成機會」；內層優先序只決定「這個群組生成哪一種」。這個專案規模不需要把群組再做成公開類別，留在 Flow 內可少兩個檔案，同時保留 0～N 顆的正確資料流。
 
 公開入口改成：
 
@@ -1383,43 +1232,76 @@ public SpecialGemSpawnPlan CreateSpawnPlan(
     MatchResult result,
     IReadOnlyList<CellCoord> moveCells)
 {
-    return CreateSpecialGemSpawnPlan(result, moveCells);
-}
-```
+    List<List<MatchLine>> groups = GroupLines(result.Line);
+    SpecialGemSpawnPlan plan = new SpecialGemSpawnPlan();
 
-新增整拍計畫與群內判定：
-
-```csharp
-private SpecialGemSpawnPlan CreateSpecialGemSpawnPlan(
-    MatchResult result,
-    IReadOnlyList<CellCoord> moveCells)
-{
-    List<MatchPattern> patterns =
-        _matchPatternBuilder.Build(result.Line);
-    List<SpecialGemSpawnInfo> spawns =
-        new List<SpecialGemSpawnInfo>();
-
-    for (int i = 0; i < patterns.Count; i++)
+    for (int i = 0; i < groups.Count; i++)
     {
-        SpecialGemSpawnInfo spawn =
-            CreateSpawnForPattern(patterns[i], moveCells);
+        plan.Add(CreateSpawnForGroup(groups[i], moveCells));
+    }
 
-        if (spawn.HasSpecialGem)
+    return plan;
+}
+
+private List<List<MatchLine>> GroupLines(
+    IReadOnlyList<MatchLine> lines)
+{
+    List<List<MatchLine>> groups =
+        new List<List<MatchLine>>();
+    bool[] grouped = new bool[lines.Count];
+
+    for (int i = 0; i < lines.Count; i++)
+    {
+        if (grouped[i]) continue;
+
+        List<MatchLine> group =
+            new List<MatchLine> { lines[i] };
+        grouped[i] = true;
+
+        for (int current = 0; current < group.Count; current++)
         {
-            spawns.Add(spawn);
+            for (int candidate = 0;
+                 candidate < lines.Count;
+                 candidate++)
+            {
+                if (grouped[candidate] ||
+                    !LinesShareCoord(
+                        group[current],
+                        lines[candidate]))
+                {
+                    continue;
+                }
+
+                grouped[candidate] = true;
+                group.Add(lines[candidate]);
+            }
+        }
+
+        groups.Add(group);
+    }
+
+    return groups;
+}
+
+private bool LinesShareCoord(
+    MatchLine lineA,
+    MatchLine lineB)
+{
+    for (int i = 0; i < lineA.Coords.Count; i++)
+    {
+        if (lineB.Contain(lineA.Coords[i]))
+        {
+            return true;
         }
     }
 
-    return spawns.Count == 0
-        ? SpecialGemSpawnPlan.None
-        : new SpecialGemSpawnPlan(spawns);
+    return false;
 }
 
-private SpecialGemSpawnInfo CreateSpawnForPattern(
-    MatchPattern pattern,
+private SpecialGemSpawnInfo CreateSpawnForGroup(
+    IReadOnlyList<MatchLine> lines,
     IReadOnlyList<CellCoord> moveCells)
 {
-    IReadOnlyList<MatchLine> lines = pattern.Lines;
     MatchLine bestLine = FindBestSpecialLine(
         lines,
         moveCells,
@@ -1453,6 +1335,8 @@ private SpecialGemSpawnInfo CreateSpawnForPattern(
     return SpecialGemSpawnInfo.None;
 }
 ```
+
+**為什麼 `current < group.Count` 不是固定上限**：`group` 會在迴圈中增長。若 A 接 B、B 接 C、A 不直接接 C，B 加入後仍會輪到 B，再把 C 收進同一組。這就是傳遞連接，不能只用種子 A 掃一次。
 
 把第 8 項的 `FindBestSpecialLine` 第一個參數由 `MatchResult result` 改成 `IReadOnlyList<MatchLine> lines`，方法完整版本如下；`IsBetterSpecialLine`、`GetSpecialLineRank` 與 `TryGetKeyGemCoord` 保持第 8 項版本：
 
@@ -1536,9 +1420,9 @@ private bool TryFindBombSpawn(
 }
 ```
 
-**立即驗證**：以兩條互不共享座標的四連建立 `MatchResult`，Builder 必須產生兩個 Pattern，`CreateSpawnPlan(...).Count` 必須為 `2`；再以共享交點的橫三＋直三建立 T 型，Builder 必須只產生一個 Pattern，Plan 的 Count 必須為 `1`，且 Power 是 `Bomb`。
+**立即驗證**：以兩條互不共享座標的四連建立 `MatchResult`，`CreateSpawnPlan(...).Count` 必須為 `2`；再以共享交點的橫三＋直三建立 T 型，Plan 的 Count 必須為 `1`，且 Power 是 `Bomb`。三組互不相連的四連必須得到 `Count == 3`，證明結構沒有「最多兩顆」的硬上限。
 
-#### ⑨-e `BoardFlowController.cs`（改既有：保留並寫回全部生成格）
+#### ⑨-c `BoardFlowController.cs`（改既有：保留並寫回全部生成格）
 
 - **精確落點**：完整取代 `ClearStep`、`RemoveSpawnCoord`、`ApplySpecialSpawn`。
 - **誰呼叫**：Controller 把上一小節取得的 Plan 傳入 `ClearStep`。
@@ -1584,9 +1468,9 @@ private void ApplySpecialSpawns(
     BoardModel board,
     SpecialGemSpawnPlan spawnPlan)
 {
-    for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+    for (int i = 0; i < spawnPlan.Count; i++)
     {
-        SpecialGemSpawnInfo spawn = spawnPlan.Spawns[i];
+        SpecialGemSpawnInfo spawn = spawnPlan[i];
         board.SetGem(spawn.SpawnCoord, spawn.GemData);
     }
 }
@@ -1594,7 +1478,7 @@ private void ApplySpecialSpawns(
 
 > 這裡直接沿用第 6 項的 `ClearCoords`，維持「讀顏色 → 清資料」的逐格順序。不要把已刪除的舊 `ClearGemTypes` 抄回來，也不要在 `ClearGems` 後才讀顏色。
 
-#### ⑨-f `DetonationChain.cs`／`SpecialGemActivator.cs`（改既有：所有新生格先佔住 `_seen`）
+#### ⑨-d `DetonationChain.cs`／`SpecialGemActivator.cs`（改既有：所有新生格先佔住 `_seen`）
 
 - **精確落點**：完整取代 `DetonationChain` 建構式與 `SpecialGemActivator.BeginChain`。
 - **誰呼叫**：`ClearStep` 呼叫 `BeginChain`；`BeginChain` 建立 Chain。
@@ -1609,9 +1493,9 @@ public DetonationChain(
 {
     _board = board;
 
-    for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+    for (int i = 0; i < spawnPlan.Count; i++)
     {
-        _seen.Add(ToKey(spawnPlan.Spawns[i].SpawnCoord));
+        _seen.Add(ToKey(spawnPlan[i].SpawnCoord));
     }
 }
 ```
@@ -1636,7 +1520,7 @@ public DetonationChain BeginChain(
 }
 ```
 
-#### ⑨-g `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：逐筆刷新 View）
+#### ⑨-e `Assets/Scripts/Game/MatchGemsGameController.cs`（改既有：逐筆刷新 View）
 
 - **精確落點**：在 `TrySwap` 的 `while (result.HasMatch)` 內，取代建立 `spawnInfo`、呼叫 `ClearStep` 與單格 `RefreshGem` 的區段。收尾章節的完整 `TrySwap` 也必須使用同一版本。
 - **誰呼叫**：交換主流程每個 combo 拍執行一次。
@@ -1659,11 +1543,11 @@ await _boardView.AnimateClearAsync(
     clearStepResult.ClearedCoords,
     _clearAnimationDuration);
 
-for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+for (int i = 0; i < spawnPlan.Count; i++)
 {
     _boardView.RefreshGem(
         _boardModel,
-        spawnPlan.Spawns[i].SpawnCoord);
+        spawnPlan[i].SpawnCoord);
 }
 ```
 
@@ -1908,16 +1792,16 @@ await RunDetonationAsync(chain);
 | 橫配對包含直消石 | 2 | 聯集形成十字 | 第二拍方向清楚可辨 |
 | 炸彈範圍包含直線石 | 3 以上 | 每顆特殊石只登記一次 | 一層一層炸，最後才落下 |
 | 兩條分離的同色橫／直線 | 依各自配對 | 不得在假交叉點生成炸彈 | 無關寶石不被覆蓋 |
-| 同一 Pattern 內五連與四連同時成立 | 1 個配對拍 | Pattern 只產生 1 顆，五連候選獲勝 | 只留下 Rainbow，不重複生成 |
+| 同一群組內五連與四連同時成立 | 1 個配對拍 | 群組只產生 1 顆，五連候選獲勝 | 只留下 Rainbow，不重複生成 |
 | 分離的五連與四連同時成立 | 1 個配對拍 | `SpawnPlan.Count == 2` | Rainbow 與 Line 都原地保留 |
-| 一次交換形成任意多個獨立特殊形狀 | 1 個配對拍 | `SpawnPlan.Count` 等於達標 Pattern 數 | 每個 Pattern 都留下自己的特殊石 |
-| 共享交點的 T／L | 1 個配對拍 | 兩條 Line 合成 1 個 Pattern，只產生 1 顆 Bomb | 交點原地換成 Bomb 外觀 |
+| 一次交換形成任意多個獨立特殊形狀 | 1 個配對拍 | `SpawnPlan.Count` 等於達標群組數 | 每個群組都留下自己的特殊石 |
+| 共享交點的 T／L | 1 個配對拍 | 兩條 Line 合成 1 個群組，只產生 1 顆 Bomb | 交點原地換成 Bomb 外觀 |
 
 ### 第三段完成檢查
 
 - [ ] 炸彈只在兩條 MatchLine 真正相交時生成。
 - [ ] 五連不會被稍後掃到的四連覆蓋。
-- [ ] 每個達標的獨立 Pattern 都得到一筆 Spawn，數量不設上限；T／L 的兩條 Line 合成同一 Pattern，所以只得到一筆。
+- [ ] 每個達標的獨立群組都得到一筆 Spawn，數量不設上限；T／L 的兩條 Line 合成同一群組，所以只得到一筆。
 - [ ] Plan 內全部生成格都從清除清單排除、寫回 Model、預佔 `_seen` 並刷新 View。
 - [ ] 同方向直線石的兩拍座標沒有重複。
 - [ ] 學員能說明「資料沒有重複」與「畫面分兩拍」是兩件事。
@@ -1987,11 +1871,11 @@ private async void TrySwap(CellCoord from, CellCoord to)
                 clearStepResult.ClearedCoords,
                 _clearAnimationDuration);
 
-            for (int i = 0; i < spawnPlan.Spawns.Count; i++)
+            for (int i = 0; i < spawnPlan.Count; i++)
             {
                 _boardView.RefreshGem(
                     _boardModel,
-                    spawnPlan.Spawns[i].SpawnCoord);
+                    spawnPlan[i].SpawnCoord);
             }
 
             await RunDetonationAsync(chain);
@@ -2191,6 +2075,7 @@ private bool ValidateDoubleLinePreset(
 
 | 日期 | Commit | Unity 版本 | 固定案例 | 資料斷言 | Play Mode | 人眼演出 | 結果／備註 |
 |---|---|---|---|---|---|---|---|
+| 2026-08-18 | `f61afbd` | `6000.4.9f1` | 雙四連、雙五連、T 型、三組四連 | 通過 | 未驗證 | 未驗證 | Warm compile 0 個 C# error；機制探針依序得到 2 HLine、2 Rainbow、1 Bomb、3 Spawns；新生格同拍不進引爆鏈。 |
 | YYYY-MM-DD | `abcdef0` | `6000.x.xf1` | 例：直配對＋直消石 | 通過／失敗／未驗證 | 通過／失敗／未驗證 | 通過／失敗／未驗證 | 具體症狀 |
 
 ## 最終課堂判準
@@ -2202,7 +2087,7 @@ private bool ValidateDoubleLinePreset(
 - 初盤與補珠為什麼不能共用完全相同的選色規則？
 - 為什麼清除證據一定要在改寫 BoardModel 前保存？
 - 炸彈交叉點如何證明同時位於兩條 MatchLine？
-- 為什麼 T／L 有兩條 `MatchLine` 卻只是一個 `MatchPattern`？多個獨立 Pattern 又為什麼都必須生成？哪一層負責把 Line 整理成 Pattern？
+- 為什麼 T／L 有兩條 `MatchLine` 卻只是一個群組？多個獨立群組又為什麼都必須生成？哪個方法負責把 Line 整理成群組？
 - 特殊石分兩拍時，哪些是資料事實，哪些只是 View 演出？
 - `_seen` 防止的是什麼？移除後會看見什麼具體症狀？
 - 為什麼所有引爆結束前不能先落下？
