@@ -30,15 +30,6 @@ namespace MatchGems.Game
         /// </summary>
         [SerializeField] private float _buildAnimationDuration = 0.3f;
         private readonly List<CellCoord> _moveCells = new List<CellCoord>();
-        private static readonly GemType[] TestGemTypes =
-        {
-            GemType.Red,
-            GemType.Blue,
-            GemType.Green,
-            GemType.Yellow,
-            GemType.Purple,
-            GemType.Pink
-        };
         private BoardModel _boardModel;
         private GridMapper _gridMapper;
         /// <summary>
@@ -208,6 +199,8 @@ namespace MatchGems.Game
                 }
         }
 
+        // ===== [課堂除錯快捷 V2：一步雙四連／五連 BEGIN] =====
+        // 本區只負責建立與預驗證固定測試盤面，不介入交換、消除、重力或特殊石生成流程。
         [ContextMenu("測試盤面/一步雙四連")]
         private void ArrangeDoubleFourMatchBoard()
         {
@@ -240,14 +233,25 @@ namespace MatchGems.Game
                 return;
             }
 
-            FillTestPattern();
+            // V2 改動：直接讀 GemType，避免 Controller 再維護一份容易漂移的六色色票。
+            GemType[] gemTypes = (GemType[])System.Enum.GetValues(typeof(GemType));
+            if (gemTypes.Length < 4)
+            {
+                Debug.LogWarning("一步雙連測試盤面至少需要四種 GemType。");
+                return;
+            }
+
+            FillTestPattern(gemTypes);
 
             int firstRow = Mathf.Max(0, _boardModel.Height / 2 - 1);
             int secondRow = firstRow + 1;
-            int swapColumn = 2;
+            int firstColumn = Mathf.Max(0, (_boardModel.Width - lineLength) / 2);
+            int swapColumn = firstColumn + lineLength / 2;
 
-            for (int x = 0; x < lineLength; x++)
+            // V2 改動：測試形狀置中；交換前是 RR?R／RR?RR，交換後才完成兩條獨立橫線。
+            for (int offset = 0; offset < lineLength; offset++)
             {
+                int x = firstColumn + offset;
                 _boardModel.SetGem(x, firstRow, GemType.Red);
                 _boardModel.SetGem(x, secondRow, GemType.Blue);
             }
@@ -255,30 +259,46 @@ namespace MatchGems.Game
             _boardModel.SetGem(swapColumn, firstRow, GemType.Blue);
             _boardModel.SetGem(swapColumn, secondRow, GemType.Red);
 
-            if (lineLength < _boardModel.Width)
+            // V2 改動：若測試線左右還有格子，明確放不同色，避免形成超過指定長度的連線。
+            if (firstColumn > 0)
             {
-                _boardModel.SetGem(lineLength, firstRow, GemType.Purple);
-                _boardModel.SetGem(lineLength, secondRow, GemType.Yellow);
+                _boardModel.SetGem(firstColumn - 1, firstRow, GemType.Green);
+                _boardModel.SetGem(firstColumn - 1, secondRow, GemType.Yellow);
+            }
+
+            int afterLastColumn = firstColumn + lineLength;
+            if (afterLastColumn < _boardModel.Width)
+            {
+                _boardModel.SetGem(afterLastColumn, firstRow, GemType.Purple);
+                _boardModel.SetGem(afterLastColumn, secondRow, GemType.Pink);
             }
 
             CellCoord from = new CellCoord(swapColumn, firstRow);
             CellCoord to = new CellCoord(swapColumn, secondRow);
-            bool presetIsValid = ValidateDoubleLinePreset(from, to, lineLength);
+            bool presetIsValid = ValidateDoubleLinePreset(
+                from,
+                to,
+                firstColumn,
+                firstRow,
+                secondRow,
+                lineLength,
+                out string validationMessage);
             RefreshAllGems();
 
-            string result = presetIsValid ? "通過" : "失敗，請檢查盤面生成規則";
+            string result = presetIsValid ? "通過" : $"失敗：{validationMessage}";
             Debug.Log(
                 $"一步雙{lineLength}連盤面已建立。交換 {from.pos} 與 {to.pos}；資料預驗證：{result}。");
         }
 
-        private void FillTestPattern()
+        private void FillTestPattern(GemType[] gemTypes)
         {
             for (int y = 0; y < _boardModel.Height; y++)
             {
                 for (int x = 0; x < _boardModel.Width; x++)
                 {
-                    int typeIndex = (x + y * 2) % TestGemTypes.Length;
-                    _boardModel.SetGem(x, y, TestGemTypes[typeIndex]);
+                    // V2 改動：橫向每格換色、直向每列錯開兩色，固定底盤不會自然形成三連。
+                    int typeIndex = (x + y * 2) % gemTypes.Length;
+                    _boardModel.SetGem(x, y, gemTypes[typeIndex]);
                 }
             }
         }
@@ -286,26 +306,75 @@ namespace MatchGems.Game
         private bool ValidateDoubleLinePreset(
             CellCoord from,
             CellCoord to,
-            int expectedLength)
+            int firstColumn,
+            int firstRow,
+            int secondRow,
+            int expectedLength,
+            out string message)
         {
             MatchResult beforeSwap = _boardFlowController.FindMatches(_boardModel);
             if (beforeSwap.HasMatch)
             {
+                message = $"交換前已存在 {beforeSwap.LineCount} 條配對";
                 return false;
             }
 
             _boardModel.SwapGems(from, to);
-            MatchResult afterSwap = _boardFlowController.FindMatches(_boardModel);
-            _boardModel.SwapGems(from, to);
+            try
+            {
+                MatchResult afterSwap = _boardFlowController.FindMatches(_boardModel);
+                if (afterSwap.LineCount != 2)
+                {
+                    message = $"交換後得到 {afterSwap.LineCount} 條配對，不是 2 條";
+                    return false;
+                }
 
-            if (afterSwap.LineCount != 2)
+                // V2 改動：不只檢查數量與長度，也確認兩條線的方向、顏色、列與完整座標。
+                bool hasRedLine = false;
+                bool hasBlueLine = false;
+                for (int i = 0; i < afterSwap.LineCount; i++)
+                {
+                    MatchLine line = afterSwap.Line[i];
+                    hasRedLine |= IsExpectedHorizontalLine(
+                        line, GemType.Red, firstColumn, firstRow, expectedLength);
+                    hasBlueLine |= IsExpectedHorizontalLine(
+                        line, GemType.Blue, firstColumn, secondRow, expectedLength);
+                }
+
+                if (!hasRedLine || !hasBlueLine)
+                {
+                    message = "兩條配對的方向、顏色或座標不符合固定案例";
+                    return false;
+                }
+
+                message = "通過";
+                return true;
+            }
+            finally
+            {
+                // V2 改動：即使掃描或驗證丟出例外，也必須把盤面換回等待學員交換的狀態。
+                _boardModel.SwapGems(from, to);
+            }
+        }
+
+        private bool IsExpectedHorizontalLine(
+            MatchLine line,
+            GemType expectedColor,
+            int firstColumn,
+            int row,
+            int expectedLength)
+        {
+            if (line.Direction != MatchDirection.Horizontal ||
+                line.Color != expectedColor ||
+                line.Length != expectedLength)
             {
                 return false;
             }
 
-            for (int i = 0; i < afterSwap.LineCount; i++)
+            // V2 改動：逐格確認預期範圍，防止「剛好也是兩條同長線」造成假通過。
+            for (int offset = 0; offset < expectedLength; offset++)
             {
-                if (afterSwap.Line[i].Length != expectedLength)
+                if (!line.Contain(new CellCoord(firstColumn + offset, row)))
                 {
                     return false;
                 }
@@ -313,5 +382,6 @@ namespace MatchGems.Game
 
             return true;
         }
+        // ===== [課堂除錯快捷 V2：一步雙四連／五連 END] =====
     }
 }
