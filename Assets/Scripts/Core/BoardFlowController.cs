@@ -67,17 +67,17 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="board"></param>
         /// <param name="result"></param>
-        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo, out DetonationChain chain)
+        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnPlan spawnPlan, out DetonationChain chain)
         {
             State = BoardState.Clearing;
             List<CellCoord> coords = result.GetUniqueCoords();
-            RemoveSpawnCoord(coords, spawnInfo);
+            RemoveSpawnCoord(coords, spawnPlan);
 
             //連鎖演算觸發位子
-            chain = _specialGemActivator.BeginChain(board, coords, spawnInfo);
+            chain = _specialGemActivator.BeginChain(board, coords, spawnPlan);
 
             //設置特殊石
-            ApplySpecialSpawn(board, spawnInfo);
+            ApplySpecialSpawn(board, spawnPlan);
             //清除資料
             board.ClearGems(coords);
 
@@ -122,16 +122,13 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="coords"></param>
         /// <param name="spawnInfo"></param>
-        private void RemoveSpawnCoord(List<CellCoord> coords, SpecialGemSpawnInfo spawnInfo)
+        private void RemoveSpawnCoord(List<CellCoord> coords, SpecialGemSpawnPlan spawnPlan)
         {
-            if (!spawnInfo.HasSpecialGem) return;
-
             for (int i = 0; i < coords.Count; i++)
             {
-                if (coords[i].X == spawnInfo.SpawnCoord.X && coords[i].Y == spawnInfo.SpawnCoord.Y)
+                if (spawnPlan.Contains(coords[i]))
                 {
                     coords.RemoveAt(i);
-                    return;
                 }
             }
         }
@@ -141,10 +138,12 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="board"></param>
         /// <param name="spawnInfo"></param>
-        private void ApplySpecialSpawn(BoardModel board, SpecialGemSpawnInfo spawnInfo)
+        private void ApplySpecialSpawn(BoardModel board, SpecialGemSpawnPlan spawnPlan)
         {
-            if (!spawnInfo.HasSpecialGem) return;
-            board.SetGem(spawnInfo.SpawnCoord, spawnInfo.GemData);
+            for (int i = 0; i < spawnPlan.Count; i++)
+            {
+                board.SetGem(spawnPlan[i].SpawnCoord, spawnPlan[i].GemData);
+            }
         }
 
         /// <summary>
@@ -189,67 +188,83 @@ namespace MatchGems.Core
         /// <param name="result"></param>
         /// <param name="moveCells"></param>
         /// <returns></returns>
-        public SpecialGemSpawnInfo CreateSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
-        {
-            return CreateSpecialGemSpawn(result, moveCells);
-        }
-
         public SpecialGemSpawnPlan CreateSpawnPlan(MatchResult result, IReadOnlyList<CellCoord> moveCells)
         {
-            return CreateSpecialGemSpawnPlan(result, moveCells);
+            List<List<MatchLine>> groups = GroupLines(result.Line);
+            SpecialGemSpawnPlan plan = new SpecialGemSpawnPlan();
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                plan.Add(CreateSpawnForGroup(groups[i], moveCells));
+            }
+
+            return plan;
         }
+
+
         #endregion 公開方法
 
         #region 私有方法
         /// <summary>
-        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
+        /// 線群組檢查比對
         /// </summary>
-        /// <param name="result"></param>
-        /// <param name="moveCells"></param>
-        private SpecialGemSpawnPlan CreateSpecialGemSpawnPlan(MatchResult result, IReadOnlyList<CellCoord> moveCells)
-        {
-            List<List<MatchLine>> groups = MatchLines(result.Line);
-            List<SpecialGemSpawnInfo> spawns = new List<SpecialGemSpawnInfo>();
-
-            for (int i = 0; i < groups.Count; i++)
-            {
-                SpecialGemSpawnInfo spawn = CreateSpecialGemSpawn(result, moveCells);
-
-                if (spawn.HasSpecialGem) spawns.Add(spawn);
-            }
-            
-            return spawns.Count == 0 
-                ? SpecialGemSpawnPlan.None
-                : new SpecialGemSpawnPlan(spawns);
-        }
-
-        private List<List<MatchLine>> MatchLines(IReadOnlyList<MatchLine> lines)
+        /// <param name="lines"></param>
+        /// <returns></returns>
+        private List<List<MatchLine>> GroupLines(IReadOnlyList<MatchLine> lines)
         {
             List<List<MatchLine>> groups = new List<List<MatchLine>>();
-            bool[] got = new bool[lines.Count];
+            bool[] grouped = new bool[lines.Count];
 
-            for (int i = 0; i < lines.Count; i++)
+            for(int i = 0; i < lines.Count; i++)
             {
+                if (grouped[i]) continue;
                 List<MatchLine> group = new List<MatchLine> { lines[i] };
-                got[i] = true;
 
-                for (int g =0; g < group.Count; g++)
+                for (int current = 0; current < group.Count; current++)
                 {
-                    MatchLine line = group[g];
-
-                    for (int l = 0; l < line.Length; l++)
+                    for (int l = 0; l < lines.Count; l++)
                     {
-                        if (got[l] || !LineShareCoord(line, lines[l]))
+                        if (grouped[l] || !LineShareCoord(group[current], lines[l]))
                         {
                             continue;
                         }
-                        got[l] = true;
+                        grouped[l] = true;
                         group.Add(lines[l]);
+
                     }
                 }
                 groups.Add(group);
             }
             return groups;
+        }
+
+        /// <summary>
+        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
+        /// </summary>
+        /// <param name="lines"></param>
+        /// <param name="moveCells"></param>
+        private SpecialGemSpawnInfo CreateSpawnForGroup(List<MatchLine> lines, IReadOnlyList<CellCoord> moveCells)
+        {
+            //搜尋是否含特殊連線
+            MatchLine matchLine = FindSpecialLine(lines, moveCells, out CellCoord bestCoord);
+            //優先序：5連 > TL5連 > 4連
+            if (matchLine != null && matchLine.Length >= 5)
+            {//Debug.Log("5連");
+                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, matchLine.CenterCoord);
+            }
+
+            if (TryFindBombSpawn(lines, out SpecialGemSpawnInfo bombSpawn))
+            {//Debug.Log("TL5連");
+                return bombSpawn;
+            }
+
+            if (matchLine != null)
+            {//Debug.Log("4連");
+                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, bestCoord);
+            }
+
+            //Debug.Log("一般");
+            return SpecialGemSpawnInfo.None;
         }
         /// <summary>
         /// 兩線是否有重疊的格子
@@ -270,44 +285,14 @@ namespace MatchGems.Core
         }
 
         /// <summary>
-        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
-        /// </summary>
-        /// <param name="result"></param>
-        /// <param name="moveCells"></param>
-        private SpecialGemSpawnInfo CreateSpecialGemSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
-        {
-            //搜尋是否含特殊連線
-            MatchLine matchLine = FindSpecialLine(result, moveCells, out CellCoord bestCoord);
-            //優先序：5連 > TL5連 > 4連
-            if (matchLine != null && matchLine.Length >= 5)
-            {//Debug.Log("5連");
-                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, matchLine.CenterCoord);
-            }
-
-            if (TryFindBombSpawn(result, out SpecialGemSpawnInfo bombSpawn))
-            {//Debug.Log("TL5連");
-                return bombSpawn;
-            }
-
-            if (matchLine != null)
-            {//Debug.Log("4連");
-                return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, bestCoord);
-            }
-
-            //Debug.Log("一般");
-            return SpecialGemSpawnInfo.None;
-        }
-
-        /// <summary>
         /// 嘗試找到TL炸彈的組合
         /// </summary>
-        /// <param name="result"></param>
+        /// <param name="lines"></param>
         /// <param name="bombSpawn"></param>
         /// <returns></returns>
-        private bool TryFindBombSpawn(MatchResult result, out SpecialGemSpawnInfo bombSpawn)
+        private bool TryFindBombSpawn(IReadOnlyList<MatchLine> lines, out SpecialGemSpawnInfo bombSpawn)
         {
             bombSpawn = SpecialGemSpawnInfo.None;
-            IReadOnlyList<MatchLine> lines = result.Line;
 
             for (int a = 0; a < lines.Count; a++)
             {
@@ -325,19 +310,25 @@ namespace MatchGems.Core
 
             return false;
         }
+
         /// <summary>
         /// 找特殊直線 4｜5 連
         /// </summary>
-        private MatchLine FindSpecialLine(MatchResult result, IReadOnlyList<CellCoord> moveCells, out CellCoord bestCoord)
+        private MatchLine FindSpecialLine(IReadOnlyList<MatchLine> lines, IReadOnlyList<CellCoord> moveCells, out CellCoord bestCoord)
         {
             MatchLine line = null;
             bestCoord = new CellCoord(0, 0);
 
-            for (int i = 0; i < result.LineCount; i++)
+            for (int i = 0; i < lines.Count; i++)
             {
-                if (result.Line[i].Length < 4) continue;
-                bestCoord = TryGetKeyGemCoord(result.Line[i], moveCells);
-                line = result.Line[i];
+                MatchLine matchLine = lines[i];
+                if (matchLine.Length < 4) continue;
+
+                bool gotkeyGem = TryGetKeyGemCoord(matchLine, moveCells, out CellCoord crood);
+                if (!gotkeyGem) continue;
+
+                line = matchLine;
+                bestCoord = crood;
             }
 
             return line;
@@ -349,16 +340,21 @@ namespace MatchGems.Core
         /// <param name="line"></param>
         /// <param name="moveCells"></param>
         /// <returns></returns>
-        private CellCoord TryGetKeyGemCoord(MatchLine line, IReadOnlyList<CellCoord> moveCells)
+        private bool TryGetKeyGemCoord(MatchLine line, IReadOnlyList<CellCoord> moveCells, out CellCoord coord)
         {
             if (moveCells != null)
             {
                 for (int i = 0; i < moveCells.Count; i++)
                 {//移動的座標清單有沒有在線內
-                    if (line.Contain(moveCells[i])) return moveCells[i];
+                    if (line.Contain(moveCells[i]))
+                    {
+                        coord = moveCells[i];
+                        return true;
+                    }
                 }
             }
-            return line.CenterCoord;//備案：直接給中間
+            coord = line.CenterCoord;
+            return false;//備案：直接給中間
         }
 
         /// <summary>

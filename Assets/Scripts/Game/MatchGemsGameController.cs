@@ -119,18 +119,18 @@ namespace MatchGems.Game
             //有配對：進入循環(進到忙碌計算)
             while (result.HasMatch)
             {
-                SpecialGemSpawnInfo spawnInfo = _boardFlowController.CreateSpawn(result, _moveCells);
+                SpecialGemSpawnPlan spawnPlan = _boardFlowController.CreateSpawnPlan(result, _moveCells);
 
                 //清除資料(依組別排除特殊石的資料)
-                ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnInfo, out DetonationChain chain);
+                ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnPlan, out DetonationChain chain);
 
                 comboCount++;//計算連鎖數
                 await _boardView.AnimateClearAsync(clearStepResult.ClearedCoords, _clearAnimationDuration);
                 
                 //特殊寶石產生判斷
-                if (spawnInfo.HasSpecialGem)
+                for (int i = 0; i < spawnPlan.Count; i++)
                 {
-                    _boardView.RefreshGem(_boardModel, spawnInfo.SpawnCoord);
+                    _boardView.RefreshGem(_boardModel, spawnPlan[i].SpawnCoord);
                 }
 
                 //特殊石引爆：獨立多層連鎖運算
@@ -210,6 +210,101 @@ namespace MatchGems.Game
                     _boardModel.GetGem(coord).SetPower();
                     _boardView.RefreshGem(_boardModel, coord);
                 }
+        }
+
+        [ContextMenu("測試盤面/一步雙四連")]
+        private void ArrangeDoubleFourMatchBoard()
+        {
+            ArrangeDoubleLineMatchBoard(4);
+        }
+        [ContextMenu("測試盤面/一步雙五連")]
+        private void ArrangeDoubleFiveMatchBoard()
+        {
+            ArrangeDoubleLineMatchBoard(5);
+        }
+
+        private void ArrangeDoubleLineMatchBoard(int lineLength)
+        {
+            if (_boardModel == null || _boardView == null)
+            {
+                Debug.LogWarning("請先進入 Play Mode，等棋盤建立後再使用測試盤面快捷。");
+                return;
+            }
+            if (_isBusy)
+            {
+                Debug.LogWarning("棋盤流程仍在運作，請等 State 回到 Idle 再排測試盤面。");
+                return;
+            }
+            if (_boardModel.Width < lineLength || _boardModel.Height < 2)
+            {
+                Debug.LogWarning($"一步雙{lineLength}連至少需要 {lineLength} × 2 的棋盤。");
+                return;
+            }
+            FillTestPattern();
+            int firstRow = Mathf.Max(0, _boardModel.Height / 2 - 1);
+            int secondRow = firstRow + 1;
+            int swapColumn = 2;
+            for (int x = 0; x < lineLength; x++)
+            {
+                _boardModel.SetGem(x, firstRow, GemType.Red);
+                _boardModel.SetGem(x, secondRow, GemType.Blue);
+            }
+            _boardModel.SetGem(swapColumn, firstRow, GemType.Blue);
+            _boardModel.SetGem(swapColumn, secondRow, GemType.Red);
+            if (lineLength < _boardModel.Width)
+            {
+                _boardModel.SetGem(lineLength, firstRow, GemType.Purple);
+                _boardModel.SetGem(lineLength, secondRow, GemType.Yellow);
+            }
+            CellCoord from = new CellCoord(swapColumn, firstRow);
+            CellCoord to = new CellCoord(swapColumn, secondRow);
+            bool presetIsValid = ValidateDoubleLinePreset(from, to, lineLength);
+            RefreshAllGems();
+            string result = presetIsValid ? "通過" : "失敗，請檢查盤面生成規則";
+            Debug.Log(
+                $"一步雙{lineLength}連盤面已建立。交換 {from.pos} 與 {to.pos}；資料預驗證：{result}。");
+        }
+
+        private void FillTestPattern()
+        {
+            for (int y = 0; y < _boardModel.Height; y++)
+            {
+                for (int x = 0; x < _boardModel.Width; x++)
+                {
+                    int typeIndex =
+                        (x + y * 2) % FillService.GemTypes.Count;
+                    _boardModel.SetGem(
+                        x,
+                        y,
+                        FillService.GemTypes[typeIndex]);
+                }
+            }
+        }
+        private bool ValidateDoubleLinePreset(
+            CellCoord from,
+            CellCoord to,
+            int expectedLength)
+        {
+            MatchResult beforeSwap = _boardFlowController.FindMatches(_boardModel);
+            if (beforeSwap.HasMatch)
+            {
+                return false;
+            }
+            _boardModel.SwapGems(from, to);
+            MatchResult afterSwap = _boardFlowController.FindMatches(_boardModel);
+            _boardModel.SwapGems(from, to);
+            if (afterSwap.LineCount != 2)
+            {
+                return false;
+            }
+            for (int i = 0; i < afterSwap.LineCount; i++)
+            {
+                if (afterSwap.Line[i].Length != expectedLength)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
     }
 }

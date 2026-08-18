@@ -9,33 +9,48 @@ namespace MatchGems.Core
     /// </summary>
     public class SpecialGemSpawnPlan
     {
-        #region 公開屬性
+        #region 屬性參數
         /// <summary>
-        /// 無計畫單預設 => 空陣列
+        /// 紀錄多組訂單
         /// </summary>
-        public static SpecialGemSpawnPlan None => new SpecialGemSpawnPlan(_emptySpawnInfo);
+        private readonly List<SpecialGemSpawnInfo> _spawns = new List<SpecialGemSpawnInfo>();
+        #endregion 屬性參數
+
+        #region 公開屬性
+        public int Count => _spawns.Count;
         /// <summary>
         /// 是否有任何特殊組成單
         /// </summary>
-        public bool HasSpawns => _spawns.Length > 0;
-
+        public bool HasSpawns => Count > 0;
+        public SpecialGemSpawnInfo this[int index] => _spawns[index];
         #endregion 公開屬性
 
-        #region 屬性參數
-        private static readonly SpecialGemSpawnInfo[] _emptySpawnInfo = Array.Empty<SpecialGemSpawnInfo>();
-        private readonly SpecialGemSpawnInfo[] _spawns;
-        #endregion 屬性參數
-
-        #region 建構式
-        public SpecialGemSpawnPlan(IReadOnlyList<SpecialGemSpawnInfo> spawns)
+        #region 公開方法
+        /// <summary>
+        /// 只收有特殊石產生的資訊
+        /// </summary>
+        /// <param name="spawnInfo"></param>
+        public void Add(SpecialGemSpawnInfo spawnInfo)
         {
-            //建立多組尺寸
-            _spawns = new SpecialGemSpawnInfo[spawns.Count];
-            for (int i = 0; i < spawns.Count; i++) 
-            {//資料對應
-                _spawns[i] = spawns[i];
+            if (spawnInfo.HasSpecialGem)
+            {
+                _spawns.Add(spawnInfo);
             }
         }
-        #endregion 建構式
+        /// <summary>
+        /// 確認是否要保留該為置給特殊石
+        /// </summary>
+        /// <param name="coord"></param>
+        /// <returns></returns>
+        public bool Contains(CellCoord coord)
+        {
+            for (int i = 0; i < Count; i++)
+            {
+                CellCoord spawnCoord = _spawns[i].SpawnCoord;
+                if (spawnCoord.X == coord.X && spawnCoord.Y == coord.Y) return true;
+            }
+            return false;
+        }
+        #endregion 公開方法
     }
 }
