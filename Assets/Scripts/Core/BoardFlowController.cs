@@ -67,17 +67,18 @@ namespace MatchGems.Core
         /// </summary>
         /// <param name="board"></param>
         /// <param name="result"></param>
-        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnInfo spawnInfo, out DetonationChain chain)
+        public ClearStepResult ClearStep(BoardModel board, MatchResult result, SpecialGemSpawnPlan spawnPlan, out DetonationChain chain)
         {
             State = BoardState.Clearing;
             List<CellCoord> coords = result.GetUniqueCoords();
-            RemoveSpawnCoord(coords, spawnInfo);
+            // [多組特殊石修正] 清除前保留 Plan 內的全部生成格。
+            RemoveSpawnCoords(coords, spawnPlan);
 
             //連鎖演算觸發位子
-            chain = _specialGemActivator.BeginChain(board, coords, spawnInfo);
+            chain = _specialGemActivator.BeginChain(board, coords, spawnPlan);
 
-            //設置特殊石
-            ApplySpecialSpawn(board, spawnInfo);
+            //設置本拍全部特殊石
+            ApplySpecialSpawns(board, spawnPlan);
             //清除資料
             board.ClearGems(coords);
 
@@ -121,17 +122,15 @@ namespace MatchGems.Core
         /// 從清單排除特殊石
         /// </summary>
         /// <param name="coords"></param>
-        /// <param name="spawnInfo"></param>
-        private void RemoveSpawnCoord(List<CellCoord> coords, SpecialGemSpawnInfo spawnInfo)
+        /// <param name="spawnPlan"></param>
+        private void RemoveSpawnCoords(List<CellCoord> coords, SpecialGemSpawnPlan spawnPlan)
         {
-            if (!spawnInfo.HasSpecialGem) return;
-
-            for (int i = 0; i < coords.Count; i++)
+            //由後往前刪，才不會因索引前移而漏掉下一格。
+            for (int i = coords.Count - 1; i >= 0; i--)
             {
-                if (coords[i].X == spawnInfo.SpawnCoord.X && coords[i].Y == spawnInfo.SpawnCoord.Y)
+                if (spawnPlan.Contains(coords[i]))
                 {
                     coords.RemoveAt(i);
-                    return;
                 }
             }
         }
@@ -140,11 +139,14 @@ namespace MatchGems.Core
         /// 確認特殊石的生成
         /// </summary>
         /// <param name="board"></param>
-        /// <param name="spawnInfo"></param>
-        private void ApplySpecialSpawn(BoardModel board, SpecialGemSpawnInfo spawnInfo)
+        /// <param name="spawnPlan"></param>
+        private void ApplySpecialSpawns(BoardModel board, SpecialGemSpawnPlan spawnPlan)
         {
-            if (!spawnInfo.HasSpecialGem) return;
-            board.SetGem(spawnInfo.SpawnCoord, spawnInfo.GemData);
+            for (int i = 0; i < spawnPlan.Count; i++)
+            {
+                SpecialGemSpawnInfo spawn = spawnPlan[i];
+                board.SetGem(spawn.SpawnCoord, spawn.GemData);
+            }
         }
 
         /// <summary>
@@ -183,131 +185,109 @@ namespace MatchGems.Core
             State = BoardState.Filling;
             return _fillService.Fill(board);
         }
-        /// <summary>
-        /// 對外的公開接口
-        /// </summary>
-        /// <param name="result"></param>
-        /// <param name="moveCells"></param>
-        /// <returns></returns>
-        public SpecialGemSpawnInfo CreateSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
-        {
-            return CreateSpecialGemSpawn(result, moveCells);
-        }
-
+        /// <summary>把本拍每個獨立配對形狀各轉成一筆特殊石生成結果。</summary>
         public SpecialGemSpawnPlan CreateSpawnPlan(MatchResult result, IReadOnlyList<CellCoord> moveCells)
         {
-            return CreateSpecialGemSpawnPlan(result, moveCells);
+            // [多組特殊石修正] 生成數量由獨立群組數決定，不再只留最後一條 Line。
+            List<List<MatchLine>> groups = GroupLines(result.Line);
+            SpecialGemSpawnPlan plan = new SpecialGemSpawnPlan();
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                plan.Add(CreateSpawnForGroup(groups[i], moveCells));
+            }
+
+            return plan;
         }
         #endregion 公開方法
 
         #region 私有方法
         /// <summary>
-        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
+        /// 共享座標的 Line 屬於同一組；完全分離的 Line 各自成組。
+        /// 動態增長的 group 會繼續往後掃，因此 A 接 B、B 接 C 仍會合成一組。
         /// </summary>
-        /// <param name="result"></param>
-        /// <param name="moveCells"></param>
-        private SpecialGemSpawnPlan CreateSpecialGemSpawnPlan(MatchResult result, IReadOnlyList<CellCoord> moveCells)
-        {
-            List<List<MatchLine>> groups = MatchLines(result.Line);
-            List<SpecialGemSpawnInfo> spawns = new List<SpecialGemSpawnInfo>();
-
-            for (int i = 0; i < groups.Count; i++)
-            {
-                SpecialGemSpawnInfo spawn = CreateSpecialGemSpawn(result, moveCells);
-
-                if (spawn.HasSpecialGem) spawns.Add(spawn);
-            }
-            
-            return spawns.Count == 0 
-                ? SpecialGemSpawnPlan.None
-                : new SpecialGemSpawnPlan(spawns);
-        }
-
-        private List<List<MatchLine>> MatchLines(IReadOnlyList<MatchLine> lines)
+        private List<List<MatchLine>> GroupLines(IReadOnlyList<MatchLine> lines)
         {
             List<List<MatchLine>> groups = new List<List<MatchLine>>();
-            bool[] got = new bool[lines.Count];
+            bool[] grouped = new bool[lines.Count];
 
             for (int i = 0; i < lines.Count; i++)
             {
+                if (grouped[i]) continue;
+
                 List<MatchLine> group = new List<MatchLine> { lines[i] };
-                got[i] = true;
+                grouped[i] = true;
 
-                for (int g =0; g < group.Count; g++)
+                for (int current = 0; current < group.Count; current++)
                 {
-                    MatchLine line = group[g];
-
-                    for (int l = 0; l < line.Length; l++)
+                    for (int candidate = 0; candidate < lines.Count; candidate++)
                     {
-                        if (got[l] || !LineShareCoord(line, lines[l]))
+                        if (grouped[candidate] ||
+                            !LinesShareCoord(group[current], lines[candidate]))
                         {
                             continue;
                         }
-                        got[l] = true;
-                        group.Add(lines[l]);
+
+                        grouped[candidate] = true;
+                        group.Add(lines[candidate]);
                     }
                 }
+
                 groups.Add(group);
             }
+
             return groups;
         }
         /// <summary>
         /// 兩線是否有重疊的格子
         /// </summary>
-        /// <param name="lineA"></param>
-        /// <param name="lineB"></param>
-        /// <returns></returns>
-        private bool LineShareCoord(MatchLine lineA, MatchLine lineB)
+        private bool LinesShareCoord(MatchLine lineA, MatchLine lineB)
         {
             for (int i = 0; i < lineA.Coords.Count; i++)
             {
                 if (lineB.Contain(lineA.Coords[i]))
-                { 
-                    return true; 
+                {
+                    return true;
                 }
             }
+
             return false;
         }
 
-        /// <summary>
-        /// 將所有移動的座標資料跟產生配對的Line比對，抓出KeyGem
-        /// </summary>
-        /// <param name="result"></param>
-        /// <param name="moveCells"></param>
-        private SpecialGemSpawnInfo CreateSpecialGemSpawn(MatchResult result, IReadOnlyList<CellCoord> moveCells)
+        /// <summary>一個群組最多生成一顆；群組內套用五連、T/L、四連優先序。</summary>
+        private SpecialGemSpawnInfo CreateSpawnForGroup(
+            IReadOnlyList<MatchLine> lines,
+            IReadOnlyList<CellCoord> moveCells)
         {
-            //搜尋是否含特殊連線
-            MatchLine matchLine = FindSpecialLine(result, moveCells, out CellCoord bestCoord);
+            MatchLine matchLine = FindSpecialLine(lines, moveCells, out CellCoord bestCoord);
+
             //優先序：5連 > TL5連 > 4連
             if (matchLine != null && matchLine.Length >= 5)
-            {//Debug.Log("5連");
+            {
                 return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, matchLine.CenterCoord);
             }
 
-            if (TryFindBombSpawn(result, out SpecialGemSpawnInfo bombSpawn))
-            {//Debug.Log("TL5連");
+            if (TryFindBombSpawn(lines, out SpecialGemSpawnInfo bombSpawn))
+            {
                 return bombSpawn;
             }
 
             if (matchLine != null)
-            {//Debug.Log("4連");
+            {
                 return GemFactory.CreateSpawnInfo(matchLine.Color, matchLine.Length, matchLine.Direction, true, bestCoord);
             }
 
-            //Debug.Log("一般");
             return SpecialGemSpawnInfo.None;
         }
 
         /// <summary>
         /// 嘗試找到TL炸彈的組合
         /// </summary>
-        /// <param name="result"></param>
-        /// <param name="bombSpawn"></param>
-        /// <returns></returns>
-        private bool TryFindBombSpawn(MatchResult result, out SpecialGemSpawnInfo bombSpawn)
+        private bool TryFindBombSpawn(
+            IReadOnlyList<MatchLine> lines,
+            out SpecialGemSpawnInfo bombSpawn)
         {
             bombSpawn = SpecialGemSpawnInfo.None;
-            IReadOnlyList<MatchLine> lines = result.Line;
 
             for (int a = 0; a < lines.Count; a++)
             {
@@ -317,8 +297,14 @@ namespace MatchGems.Core
                     MatchLine lineB = lines[b];
                     //兩線同向或不同色無法構成TL型
                     if (lineA.Direction == lineB.Direction || lineA.Color != lineB.Color) continue;
+
+                    if (!TryGetIntersection(lineA, lineB, out CellCoord intersection)) continue;
+
                     //產生炸彈訂單
-                    bombSpawn = new SpecialGemSpawnInfo(true, GemFactory.CreateBomb(lineA.Color), TryGetIntersection(lineA, lineB));
+                    bombSpawn = new SpecialGemSpawnInfo(
+                        true,
+                        GemFactory.CreateBomb(lineA.Color),
+                        intersection);
                     return true;
                 }
             }
@@ -328,16 +314,23 @@ namespace MatchGems.Core
         /// <summary>
         /// 找特殊直線 4｜5 連
         /// </summary>
-        private MatchLine FindSpecialLine(MatchResult result, IReadOnlyList<CellCoord> moveCells, out CellCoord bestCoord)
+        private MatchLine FindSpecialLine(
+            IReadOnlyList<MatchLine> lines,
+            IReadOnlyList<CellCoord> moveCells,
+            out CellCoord bestCoord)
         {
             MatchLine line = null;
             bestCoord = new CellCoord(0, 0);
 
-            for (int i = 0; i < result.LineCount; i++)
+            for (int i = 0; i < lines.Count; i++)
             {
-                if (result.Line[i].Length < 4) continue;
-                bestCoord = TryGetKeyGemCoord(result.Line[i], moveCells);
-                line = result.Line[i];
+                if (lines[i].Length < 4) continue;
+
+                if (line == null || lines[i].Length > line.Length)
+                {
+                    line = lines[i];
+                    bestCoord = TryGetKeyGemCoord(line, moveCells);
+                }
             }
 
             return line;
@@ -367,12 +360,22 @@ namespace MatchGems.Core
         /// <param name="A"></param>
         /// <param name="B"></param>
         /// <returns></returns>
-        private CellCoord TryGetIntersection(MatchLine A, MatchLine B)
+        private bool TryGetIntersection(
+            MatchLine lineA,
+            MatchLine lineB,
+            out CellCoord intersection)
         {
-            MatchLine lineH = A.Direction == MatchDirection.Horizontal ? A : B;
-            MatchLine lineV = A.Direction == MatchDirection.Vertical ? A : B;
+            for (int i = 0; i < lineA.Coords.Count; i++)
+            {
+                if (lineB.Contain(lineA.Coords[i]))
+                {
+                    intersection = lineA.Coords[i];
+                    return true;
+                }
+            }
 
-            return new CellCoord(lineV.CenterCoord.X, lineH.CenterCoord.Y); 
+            intersection = new CellCoord(0, 0);
+            return false;
         }
         #endregion 私有方法
     }

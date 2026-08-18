@@ -1,41 +1,42 @@
-﻿using System;
 using System.Collections.Generic;
-using UnityEngine;
 
 namespace MatchGems.Core
 {
     /// <summary>
-    /// 同一拍消除能產生特殊石的計畫單
+    /// 保存同一拍要生成的全部特殊石。
+    /// 一筆 SpecialGemSpawnInfo 代表一顆；Plan 代表這一拍的 0～N 顆。
     /// </summary>
-    public class SpecialGemSpawnPlan
+    public sealed class SpecialGemSpawnPlan
     {
-        #region 公開屬性
-        /// <summary>
-        /// 無計畫單預設 => 空陣列
-        /// </summary>
-        public static SpecialGemSpawnPlan None => new SpecialGemSpawnPlan(_emptySpawnInfo);
-        /// <summary>
-        /// 是否有任何特殊組成單
-        /// </summary>
-        public bool HasSpawns => _spawns.Length > 0;
+        private readonly List<SpecialGemSpawnInfo> _spawns =
+            new List<SpecialGemSpawnInfo>();
 
-        #endregion 公開屬性
+        public int Count => _spawns.Count;
+        public bool HasSpawns => Count > 0;
+        public SpecialGemSpawnInfo this[int index] => _spawns[index];
 
-        #region 屬性參數
-        private static readonly SpecialGemSpawnInfo[] _emptySpawnInfo = Array.Empty<SpecialGemSpawnInfo>();
-        private readonly SpecialGemSpawnInfo[] _spawns;
-        #endregion 屬性參數
-
-        #region 建構式
-        public SpecialGemSpawnPlan(IReadOnlyList<SpecialGemSpawnInfo> spawns)
+        /// <summary>只收下有效的特殊石生成結果。</summary>
+        public void Add(SpecialGemSpawnInfo spawn)
         {
-            //建立多組尺寸
-            _spawns = new SpecialGemSpawnInfo[spawns.Count];
-            for (int i = 0; i < spawns.Count; i++) 
-            {//資料對應
-                _spawns[i] = spawns[i];
+            if (spawn.HasSpecialGem)
+            {
+                _spawns.Add(spawn);
             }
         }
-        #endregion 建構式
+
+        /// <summary>確認某格是否要保留給新生特殊石。</summary>
+        public bool Contains(CellCoord coord)
+        {
+            for (int i = 0; i < _spawns.Count; i++)
+            {
+                CellCoord spawnCoord = _spawns[i].SpawnCoord;
+                if (spawnCoord.X == coord.X && spawnCoord.Y == coord.Y)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 }

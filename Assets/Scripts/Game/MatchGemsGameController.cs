@@ -119,18 +119,25 @@ namespace MatchGems.Game
             //有配對：進入循環(進到忙碌計算)
             while (result.HasMatch)
             {
-                SpecialGemSpawnInfo spawnInfo = _boardFlowController.CreateSpawn(result, _moveCells);
+                // [多組特殊石修正] 一拍先建立整份 Plan，再交給清除與 View 逐筆處理。
+                SpecialGemSpawnPlan spawnPlan =
+                    _boardFlowController.CreateSpawnPlan(result, _moveCells);
 
                 //清除資料(依組別排除特殊石的資料)
-                ClearStepResult clearStepResult = _boardFlowController.ClearStep(_boardModel, result, spawnInfo, out DetonationChain chain);
+                ClearStepResult clearStepResult =
+                    _boardFlowController.ClearStep(
+                        _boardModel,
+                        result,
+                        spawnPlan,
+                        out DetonationChain chain);
 
                 comboCount++;//計算連鎖數
                 await _boardView.AnimateClearAsync(clearStepResult.ClearedCoords, _clearAnimationDuration);
                 
-                //特殊寶石產生判斷
-                if (spawnInfo.HasSpecialGem)
+                //每一顆新生特殊石都要各自刷新外觀。
+                for (int i = 0; i < spawnPlan.Count; i++)
                 {
-                    _boardView.RefreshGem(_boardModel, spawnInfo.SpawnCoord);
+                    _boardView.RefreshGem(_boardModel, spawnPlan[i].SpawnCoord);
                 }
 
                 //特殊石引爆：獨立多層連鎖運算
@@ -211,5 +218,124 @@ namespace MatchGems.Game
                     _boardView.RefreshGem(_boardModel, coord);
                 }
         }
+
+        // ===== [課堂除錯快捷：一步雙四連／五連 BEGIN] =====
+        // 本區只建立固定測試盤面，不介入交換、消除、重力或特殊石生成規則。
+        [ContextMenu("測試盤面/一步雙四連")]
+        private void ArrangeDoubleFourMatchBoard()
+        {
+            ArrangeDoubleLineMatchBoard(4);
+        }
+
+        [ContextMenu("測試盤面/一步雙五連")]
+        private void ArrangeDoubleFiveMatchBoard()
+        {
+            ArrangeDoubleLineMatchBoard(5);
+        }
+
+        private void ArrangeDoubleLineMatchBoard(int lineLength)
+        {
+            if (_boardModel == null || _boardView == null)
+            {
+                Debug.LogWarning("請先進入 Play Mode，等棋盤建立後再使用測試盤面快捷。");
+                return;
+            }
+
+            if (_isBusy)
+            {
+                Debug.LogWarning("棋盤流程仍在運作，請等 State 回到 Idle 再排測試盤面。");
+                return;
+            }
+
+            if (_boardModel.Width < lineLength || _boardModel.Height < 2)
+            {
+                Debug.LogWarning($"一步雙{lineLength}連至少需要 {lineLength} × 2 的棋盤。");
+                return;
+            }
+
+            GemType[] gemTypes = (GemType[])System.Enum.GetValues(typeof(GemType));
+            FillTestPattern(gemTypes);
+
+            int firstRow = Mathf.Max(0, _boardModel.Height / 2 - 1);
+            int secondRow = firstRow + 1;
+            int firstColumn = Mathf.Max(0, (_boardModel.Width - lineLength) / 2);
+            int swapColumn = firstColumn + lineLength / 2;
+
+            //中央兩排各放一顆對方顏色；交換這兩格後，同時完成兩組連線。
+            for (int offset = 0; offset < lineLength; offset++)
+            {
+                int x = firstColumn + offset;
+                _boardModel.SetGem(x, firstRow, GemType.Red);
+                _boardModel.SetGem(x, secondRow, GemType.Blue);
+            }
+
+            _boardModel.SetGem(swapColumn, firstRow, GemType.Blue);
+            _boardModel.SetGem(swapColumn, secondRow, GemType.Red);
+
+            //測試線左右放不同色，避免連線超過指定長度。
+            if (firstColumn > 0)
+            {
+                _boardModel.SetGem(firstColumn - 1, firstRow, GemType.Green);
+                _boardModel.SetGem(firstColumn - 1, secondRow, GemType.Yellow);
+            }
+
+            int afterLastColumn = firstColumn + lineLength;
+            if (afterLastColumn < _boardModel.Width)
+            {
+                _boardModel.SetGem(afterLastColumn, firstRow, GemType.Purple);
+                _boardModel.SetGem(afterLastColumn, secondRow, GemType.Pink);
+            }
+
+            CellCoord from = new CellCoord(swapColumn, firstRow);
+            CellCoord to = new CellCoord(swapColumn, secondRow);
+            bool presetIsValid = ValidateDoubleLinePreset(from, to, lineLength);
+            RefreshAllGems();
+
+            string result = presetIsValid ? "通過" : "失敗，請檢查盤面生成規則";
+            Debug.Log($"一步雙{lineLength}連盤面已建立。交換 {from.pos} 與 {to.pos}；資料預驗證：{result}。");
+        }
+
+        private void FillTestPattern(GemType[] gemTypes)
+        {
+            for (int y = 0; y < _boardModel.Height; y++)
+            {
+                for (int x = 0; x < _boardModel.Width; x++)
+                {
+                    int typeIndex = (x + y * 2) % gemTypes.Length;
+                    _boardModel.SetGem(x, y, gemTypes[typeIndex]);
+                }
+            }
+        }
+
+        private bool ValidateDoubleLinePreset(CellCoord from, CellCoord to, int expectedLength)
+        {
+            if (_boardFlowController.FindMatches(_boardModel).HasMatch) return false;
+
+            _boardModel.SwapGems(from, to);
+            try
+            {
+                MatchResult result = _boardFlowController.FindMatches(_boardModel);
+                if (result.LineCount != 2) return false;
+
+                SpecialGemSpawnPlan plan = _boardFlowController.CreateSpawnPlan(
+                    result,
+                    new List<CellCoord> { from, to });
+
+                //快捷本身也要確認兩條線真的會轉成兩筆生成結果。
+                if (plan.Count != 2) return false;
+                for (int i = 0; i < result.LineCount; i++)
+                {
+                    if (result.Line[i].Length != expectedLength) return false;
+                }
+
+                return true;
+            }
+            finally
+            {
+                //預驗證結束後，盤面必須回到等待學員交換的狀態。
+                _boardModel.SwapGems(from, to);
+            }
+        }
+        // ===== [課堂除錯快捷：一步雙四連／五連 END] =====
     }
 }

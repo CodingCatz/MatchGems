@@ -28,12 +28,14 @@ namespace MatchGems.Core
         /// <summary>
         /// 建立一條引爆連鎖
         /// </summary>
-        public DetonationChain(BoardModel board, SpecialGemSpawnInfo spawnInfo)
+        public DetonationChain(BoardModel board, SpecialGemSpawnPlan spawnPlan)
         {
             _board = board;
-            if (spawnInfo.HasSpecialGem)
+
+            // [多組特殊石修正] 全部新生特殊石都不能在出生的同一拍被登記成引信。
+            for (int i = 0; i < spawnPlan.Count; i++)
             {
-                _seen.Add(ToKey(spawnInfo.SpawnCoord));
+                _seen.Add(ToKey(spawnPlan[i].SpawnCoord));
             }
         }
         #endregion 建構

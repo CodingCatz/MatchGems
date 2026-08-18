@@ -12,10 +12,10 @@ namespace MatchGems.Core
         /// <summary>
         /// 開始記錄連鎖，回報連鎖資料物件
         /// </summary>
-        public DetonationChain BeginChain(BoardModel board, IReadOnlyList<CellCoord> coords, SpecialGemSpawnInfo spawnInfo)
+        public DetonationChain BeginChain(BoardModel board, IReadOnlyList<CellCoord> coords, SpecialGemSpawnPlan spawnPlan)
         {
-            //建立連鎖資料
-            DetonationChain chain = new DetonationChain(board, spawnInfo);
+            // [多組特殊石修正] 把整份 Plan 交給 Chain 保護全部新生格。
+            DetonationChain chain = new DetonationChain(board, spawnPlan);
             for (int i = 0; i < coords.Count; i++)
             {
                 chain.TryRegister(coords[i]);
